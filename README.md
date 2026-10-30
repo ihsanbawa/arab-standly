@@ -81,7 +81,7 @@ Twilio may require sender registration/verification and verified destinations on
 
 See [RAILWAY.md](RAILWAY.md) for the exact setup. Do not reuse or alter the Todoist Timer service: this is a separate bot and volume.
 
-The repository includes a Dockerfile and GitHub Actions tests. Health checks, restart settings, and storage are configured on the Railway service. **The GitHub connection, selected `main` branch, secrets, and Wait for CI setting must also be configured and verified.** Committing files alone does not connect GitHub to Railway. New Railway services no longer accept the deprecated `railway.json` format; this service uses its live Railway settings instead.
+The repository includes a multi-stage Dockerfile that runs the tests before producing a deployable runtime image, plus a GitHub Actions test workflow. Health checks, restart settings, and storage are configured on the Railway service. **The service is connected to `ihsanbawa/arab-standly` on `main`: new pushes automatically deploy.** Secrets still need account-owner setup. The optional Wait for CI setting is not required for the Docker build-time test gate. New Railway services no longer accept the deprecated `railway.json` format; this service uses its live Railway settings instead.
 
 One process/replica only. SQLite lives on a Railway volume. Bot startup refuses Railway deployment without a volume. No public website/domain is necessary; Discord connects outbound. Health checks return 503 until Discord and the scheduler are ready.
 

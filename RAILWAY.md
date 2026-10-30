@@ -4,7 +4,7 @@
 
 1. Create a separate Railway project/service named **al-mizan** using **Deploy from GitHub repo**.
 2. Choose `ihsanbawa/arab-standly` and set source branch to **main**; keep automatic deploys enabled.
-3. Enable **Wait for CI** so Railway waits for the repository's test workflow before deployment.
+3. **Wait for CI** is an optional extra dashboard setting. The Dockerfile already runs the test suite before producing the runtime image, so failing tests block a Railway build even without that setting.
 4. Attach a volume at **/data**. Set `DATABASE_PATH=/data/mizan.sqlite3`.
 5. Add `DISCORD_BOT_TOKEN`, `DISCORD_GUILD_ID`, `BOT_OWNER_ID` in service Variables. Keep financial and Twilio integrations disabled until configured.
 6. Railway automatically detects the Dockerfile. Set start `python -m mizan.bot`, health path `/health`, timeout 120 seconds, restart on failure (5 retries), port 8080, and one replica. These settings are already configured on the created service. Do not add a deprecated `railway.json` file: new services cannot use that format.
@@ -24,7 +24,7 @@ This verifies the pipeline; a checked-in config alone does not prove that `main`
 
 ## Provisioning status
 
-A dedicated Railway project/service and a 500 MB volume at `/data` have been prepared. The Todoist Timer service is separate. Repository connection and Discord credentials are required before the bot can go live. No financial goals are activated by deploying this code.
+A dedicated Railway project/service and a 500 MB volume at `/data` have been prepared. `ihsanbawa/arab-standly` is connected on branch `main`, with no pinned commit: future pushes automatically deploy. The Todoist Timer service is separate. The first image built successfully; startup requires Discord credentials. No financial goals are activated by deploying this code.
 
 ## Live integrations
 
