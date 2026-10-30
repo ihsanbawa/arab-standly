@@ -21,6 +21,16 @@ class Wuphf:
             raise RuleError("Only active class members can opt in.")
         self.store.set(f"nudges:{uid}", {"sms": sms, "calls": calls, "early": early})
 
+    def phone(self, uid):
+        contacts = json.loads(os.getenv("WUPHF_CONTACTS_JSON", "{}"))
+        envname = contacts.get(str(uid))
+        phone = os.getenv(envname, "") if envname else ""
+        if not re.fullmatch(r"\+[1-9]\d{7,14}", phone):
+            raise RuleError("No valid private E.164 phone number is configured for this member.")
+        if not all(os.getenv(k) for k in ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_PHONE_NUMBER")):
+            raise RuleError("Twilio is not configured.")
+        return phone
+
     def reserve(self, uid, mode, reason):
         prefs = self.store.get(f"nudges:{uid}", {})
         if mode not in {"sms", "calls"} or not prefs.get(mode):
@@ -30,13 +40,7 @@ class Wuphf:
         local = self.store.clock().astimezone(ZoneInfo(self.store.tz))
         if (local.hour < 8 or local.hour >= 21) and not prefs.get("early"):
             raise RuleError("Quiet hours: 21:00–08:00. Recipient can explicitly allow Fajr-time nudges.")
-        contacts = json.loads(os.getenv("WUPHF_CONTACTS_JSON", "{}"))
-        envname = contacts.get(str(uid))
-        phone = os.getenv(envname, "") if envname else ""
-        if not re.fullmatch(r"\+[1-9]\d{7,14}", phone):
-            raise RuleError("No valid private E.164 phone number is configured for this member.")
-        if not all(os.getenv(k) for k in ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_PHONE_NUMBER")):
-            raise RuleError("Twilio is not configured.")
+        phone = self.phone(uid)
         recent = self.store.get(f"nudge_last:{uid}")
         if recent and self.store.clock() - datetime.fromisoformat(recent) < timedelta(minutes=60):
             raise RuleError("One WUPHF per recipient per hour. Please wait.")

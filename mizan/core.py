@@ -191,7 +191,7 @@ class Store:
                 "This month has a Beeminder audit. Reconcile it with the TA before changing class records."
             )
 
-    def create_class(self, start, duration, location, topic, actor, prep="", due=None):
+    def create_class(self, start, duration, location, topic, actor, prep="", due=None, weekly_key=None):
         if not self.roster():
             raise RuleError("Add the class members first.")
         if start <= self.clock():
@@ -234,6 +234,8 @@ class Store:
                 "INSERT INTO session_members VALUES(?,?)", [(sid, m["user_id"]) for m in self.roster()]
             )
             self.log(actor, "class_created", {"session": sid})
+            if weekly_key:
+                self.db.execute('INSERT INTO settings VALUES(?,?)', (weekly_key, json.dumps(sid)))
         return sid
 
     def rsvp(self, sid, uid, response, note="", revision=None):

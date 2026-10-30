@@ -19,6 +19,8 @@ from .beeminder import Beeminder
 from .content import NUDGE, RESOURCES, roast
 from .core import RuleError, Store, month_of, parse_local, stamp
 from .wuphf import Wuphf
+from . import ui
+from .prayer import SOURCE, TIMETABLE, ensure_weekly
 
 log = logging.getLogger("mizan")
 
@@ -77,6 +79,13 @@ class ClassView(discord.ui.View):
 
         report.callback = report_callback
         self.add_item(report)
+        controls = discord.ui.Button(label='TA class controls', custom_id=f'mizan:controls:{sid}:{revision}', row=1)
+        async def controls_callback(interaction):
+            bot.require_ta(interaction)
+            ui.guarded(bot, sid, revision)
+            await ui.class_action(bot, interaction, 'manage', sid)
+        controls.callback = controls_callback
+        self.add_item(controls)
 
     async def on_error(self, interaction, error, item):
         await self.bot.respond_error(interaction, error)
@@ -95,6 +104,7 @@ class ReportModal(discord.ui.Modal, title="Report a class problem"):
         self.bot, self.sid = bot, sid
 
     async def on_submit(self, interaction):
+        self.bot.check_guild(interaction)
         self.bot.store.disruption(self.sid, interaction.user.id, str(self.reason))
         await interaction.response.send_message(
             "Reported. The TA will decide whether the rest still meet or class needs moving. No automatic penalty.",
@@ -174,6 +184,7 @@ class MizanBot(discord.Client):
         self.last_tick = None
         self.tick_errors = 0
         self.runner = None
+        self.test_sessions = {}
         register_commands(self)
 
     def check_guild(self, interaction):
@@ -256,6 +267,10 @@ class MizanBot(discord.Client):
             value="\n".join(f"[{name}]({url})" for name, url in RESOURCES[:2]),
             inline=False,
         )
+        local_start = datetime.fromisoformat(s['start_at']).astimezone(ZoneInfo('America/Chicago'))
+        iq = TIMETABLE['iqamah'].get(local_start.date().isoformat())
+        if iq:
+            embed.add_field(name='Fajr at IACC', value=f"[Official timetable]({SOURCE}): iqamah {iq} AM. Class starts at the time above, after prayer.", inline=False)
         embed.set_footer(
             text=f"In person · {s['duration']} minutes · Revision {s['revision']} · Original time stands until TA confirms a move"
         )
@@ -275,7 +290,8 @@ class MizanBot(discord.Client):
             except discord.NotFound:
                 pass
         if create:
-            message = await channel.send(embed=self.card(sid), view=view)
+            people = ' '.join(f"<@{p['user_id']}>" for p in self.store.participants(sid))
+            message = await channel.send(content=f"📚 {people} Can you make this class? Tap your response below.", embed=self.card(sid), view=view)
             with self.store.db:
                 self.store.db.execute("UPDATE sessions SET message_id=? WHERE id=?", (message.id, sid))
 
@@ -325,6 +341,7 @@ class MizanBot(discord.Client):
 
     async def setup_hook(self):
         self.http_client = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20))
+        self.add_view(ui.Panel(self))
         for s in self.store.rows(
             "SELECT * FROM sessions WHERE status='scheduled' AND message_id IS NOT NULL"
         ):
@@ -361,6 +378,9 @@ class MizanBot(discord.Client):
         self.scheduler.start()
 
     async def close(self):
+        for demo in self.test_sessions.values():
+            await demo.close()
+        self.test_sessions.clear()
         self.scheduler.cancel()
         if self.http_client:
             await self.http_client.close()
@@ -385,6 +405,15 @@ class MizanBot(discord.Client):
     async def tick(self):
         if not self.store.get("channel_id"):
             return
+        await ui.ensure_panel(self)
+        try:
+            weekly_sid = ensure_weekly(self.store)
+            if weekly_sid:
+                session = self.store.session(weekly_sid)
+                if session['status'] == 'scheduled' and not session['message_id']:
+                    await self.update_card(weekly_sid, create=True)
+        except RuleError as exc:
+            await self.notify_once('calendar-missing:' + self.store.clock().strftime('%Y-%m-%d'), str(exc))
         now = self.store.clock()
         local = now.astimezone(ZoneInfo(self.store.tz))
         month = month_of(now, self.store.tz)
@@ -460,21 +489,20 @@ class MizanBot(discord.Client):
                 ),
             ),
         )
-        if count < 2 and len(remaining) < 2 - count and local.day >= 15:
+        if count < 2 and len(remaining) < 2 - count and local.day >= 15 and len(self.store.roster()) == 4:
             await self.notify_once(
                 f"risk:{month}:{local.day}",
-                f"⚠️ Save this month: **{count}/2** classes held; only {len(remaining)} future sessions are scheduled. TA: /schedule a class or /poll a makeup. Group financial commitment may be at risk.",
+                f"⚠️ Save this month: **{count}/2** classes held; only {len(remaining)} future sessions are scheduled. TA: /schedule a class or /poll a makeup. Group target: two held classes. Beeminder charges apply only after the separate commitment setup is activated.",
             )
         for s in self.store.rows("SELECT id FROM sessions WHERE status='needs_replacement'"):
             await self.notify_once(
                 f"replacement:{s['id']}:{local.strftime('%Y-%m-%d')}",
                 f"Class #{s['id']} still needs a replacement. TA: /poll with two or more alternatives.",
             )
-        # Weekly schedule is prayer-relative, not a fabricated fixed Fajr time.
-        if local.weekday() == 0 and not self.store.next_classes():
+        if len(self.store.roster()) != 4:
             await self.notify_once(
-                f"schedule-week:{local.strftime('%Y-%W')}",
-                "TA: schedule Saturday's 60-minute class after Fajr congregation at IACC. Check the official iqamah time, then /schedule the actual class start. https://planomasjid.org/iacc-prayer-timings-2026/",
+                'roster-needed',
+                'TA: use **Class roster** on the control panel to select the four participants. Weekly Saturday invitations start automatically once all four are registered.',
             )
         if (
             self.bee.configured()
@@ -519,44 +547,53 @@ def register_commands(bot):
     @tree.command(description="Configure the class announcement channel and TA role (server managers only)")
     @app_commands.default_permissions(manage_guild=True)
     async def setup(
-        interaction: discord.Interaction, channel: discord.TextChannel, ta_role: discord.Role | None = None
+        interaction: discord.Interaction, channel: discord.TextChannel | None = None, ta_role: discord.Role | None = None
     ):
         bot.require_ta(interaction)
         if not interaction.permissions.manage_guild and interaction.user.id != int(
             os.getenv("BOT_OWNER_ID", "0")
         ):
             raise RuleError("A server manager must configure the TA role.")
+        channel = channel or interaction.channel
+        if not isinstance(channel, discord.TextChannel):
+            raise RuleError("Choose a text channel for announcements.")
         if channel.guild.id != interaction.guild_id:
             raise RuleError("Choose a channel in this server.")
         store.set("guild_id", interaction.guild_id)
+        if store.get('channel_id') != channel.id:
+            store.set('panel_message_id', None)
         store.set("channel_id", channel.id)
         store.set("ta_role_id", ta_role.id if ta_role else None)
         store.set("timezone", "America/Chicago")
         await interaction.response.send_message(
-            "Configured: Saturday after Fajr congregation, 60 minutes, IACC Plano, Dallas time. Add your four participants with /member, then /schedule the verified start time.",
+            "Configured: Saturday after Fajr congregation, 60 minutes, IACC Plano, Dallas time. Use Class roster to select four people; Saturday invitations then start automatically using IACC Fajr iqamah + 15 minutes. Change this in Status & settings.",
             ephemeral=True,
         )
 
     @tree.command(description="Add a participant or toggle a hiatus; teachers are participants too")
-    async def member(interaction: discord.Interaction, person: discord.Member, active: bool = True):
+    async def member(interaction: discord.Interaction, person: discord.Member | None = None, active: bool = True):
         bot.require_ta(interaction)
+        if person is None:
+            return await ui.route(bot, interaction, 'member')
         store.member(person.id, person.display_name, active)
         await interaction.response.send_message(
             f"{safe(person.display_name)}: {'active for future classes' if active else 'hiatus for future classes'}. Existing session rosters stay intact; use /attendance excused for those.",
             ephemeral=True,
         )
 
-    @tree.command(description="Schedule an in-person class; use YYYY-MM-DD HH:MM in Dallas time")
+    @tree.command(description="Preview next Saturday after IACC Fajr; defaults filled, tap to announce")
     async def schedule(
         interaction: discord.Interaction,
-        start: str,
-        topic: str,
+        start: str | None = None,
+        topic: str = "Arabic class · continue our current lesson",
         prep: str = "",
         location: str = "IACC Plano · after Fajr congregation",
         duration: int = 60,
         rsvp_deadline: str | None = None,
     ):
         bot.require_ta(interaction)
+        if start is None:
+            return await ui.route(bot, interaction, 'schedule')
         dt = parse_local(start, store.tz)
         due = parse_local(rsvp_deadline, store.tz) if rsvp_deadline else None
         sid = store.create_class(dt, duration, location, topic, interaction.user.id, prep, due)
@@ -585,11 +622,13 @@ def register_commands(bot):
     @tree.command(description="Respond to a class invitation")
     async def rsvp(
         interaction: discord.Interaction,
-        class_id: int,
-        response: Literal["coming", "late", "unavailable", "change"],
+        class_id: int | None = None,
+        response: Literal["coming", "late", "unavailable", "change"] | None = None,
         note: str = "",
     ):
         bot.check_guild(interaction)
+        if class_id is None or response is None:
+            return await ui.route(bot, interaction, 'rsvp', class_id=class_id)
         store.rsvp(class_id, interaction.user.id, response, note)
         await interaction.response.defer(ephemeral=True)
         await bot.update_card(class_id)
@@ -602,8 +641,10 @@ def register_commands(bot):
             )
 
     @tree.command(description="Report a missing person, last-minute conflict, or class that did not happen")
-    async def report(interaction: discord.Interaction, class_id: int, reason: str):
+    async def report(interaction: discord.Interaction, class_id: int | None = None, reason: str | None = None):
         bot.check_guild(interaction)
+        if class_id is None or reason is None:
+            return await ui.route(bot, interaction, 'report', class_id=class_id)
         store.ensure_participant(class_id, interaction.user.id)
         store.disruption(class_id, interaction.user.id, reason)
         await interaction.response.send_message(
@@ -614,8 +655,10 @@ def register_commands(bot):
         )
 
     @tree.command(description="Open a replacement poll; times separated by semicolons, Dallas time")
-    async def poll(interaction: discord.Interaction, class_id: int, options: str, deadline: str):
+    async def poll(interaction: discord.Interaction, class_id: int | None = None, options: str | None = None, deadline: str | None = None):
         bot.require_ta(interaction)
+        if class_id is None or options is None or deadline is None:
+            return await ui.route(bot, interaction, 'poll', class_id=class_id)
         slots = [stamp(parse_local(x.strip(), store.tz)) for x in options.split(";")]
         pid = store.open_poll(class_id, slots, parse_local(deadline, store.tz), interaction.user.id)
         await interaction.response.defer(ephemeral=True)
@@ -627,13 +670,15 @@ def register_commands(bot):
     @tree.command(description="Confirm a poll option; optionally identify who broke an accepted commitment")
     async def confirm_slot(
         interaction: discord.Interaction,
-        poll_id: int,
-        option: int,
+        poll_id: int | None = None,
+        option: int | None = None,
         responsible: discord.Member | None = None,
         excused: bool = False,
         accept_conflicts: bool = False,
     ):
         bot.require_ta(interaction)
+        if poll_id is None or option is None:
+            return await ui.route(bot, interaction, 'confirm_slot', poll_id=poll_id)
         p = store.poll(poll_id)
         available = {
             r["user_id"]
@@ -672,12 +717,14 @@ def register_commands(bot):
     @tree.command(description="Mark class as not held and needing replacement; no automatic group blame")
     async def cancel(
         interaction: discord.Interaction,
-        class_id: int,
-        reason: str,
+        class_id: int | None = None,
+        reason: str | None = None,
         responsible: discord.Member | None = None,
         excused: bool = False,
     ):
         bot.require_ta(interaction)
+        if class_id is None or reason is None:
+            return await ui.route(bot, interaction, 'cancel', class_id=class_id)
         store.cancel(class_id, interaction.user.id, reason, responsible.id if responsible else None, excused)
         await interaction.response.defer(ephemeral=True)
         await bot.update_card(class_id)
@@ -696,12 +743,14 @@ def register_commands(bot):
     )
     async def attendance(
         interaction: discord.Interaction,
-        class_id: int,
-        person: discord.Member,
-        status: Literal["present", "absent", "excused", "partial"],
+        class_id: int | None = None,
+        person: discord.Member | None = None,
+        status: Literal["present", "absent", "excused", "partial"] | None = None,
         reason: str = "",
     ):
         bot.require_ta(interaction)
+        if class_id is None or person is None or status is None:
+            return await ui.route(bot, interaction, 'attendance', class_id=class_id)
         store.set_attendance(class_id, person.id, status, interaction.user.id, reason)
         await interaction.response.send_message(
             f"Recorded {safe(person.display_name)}: {status}.", ephemeral=True
@@ -713,8 +762,10 @@ def register_commands(bot):
             )
 
     @tree.command(description="Confirm class happened; accepted RSVPs count as present unless corrected")
-    async def classheld(interaction: discord.Interaction, class_id: int):
+    async def classheld(interaction: discord.Interaction, class_id: int | None = None):
         bot.require_ta(interaction)
+        if class_id is None:
+            return await ui.route(bot, interaction, 'classheld')
         changed = store.held(class_id, interaction.user.id)
         await interaction.response.defer(ephemeral=True)
         await bot.update_card(class_id)
@@ -729,8 +780,10 @@ def register_commands(bot):
             )
 
     @tree.command(description="Reopen a mistaken class confirmation before any financial audit")
-    async def reopen(interaction: discord.Interaction, class_id: int):
+    async def reopen(interaction: discord.Interaction, class_id: int | None = None):
         bot.require_ta(interaction)
+        if class_id is None:
+            return await ui.route(bot, interaction, 'reopen')
         store.reopen(class_id, interaction.user.id)
         await interaction.response.defer(ephemeral=True)
         await bot.update_card(class_id)
@@ -739,8 +792,10 @@ def register_commands(bot):
         )
 
     @tree.command(description="Waive a disruption penalty with an audit reason")
-    async def waive(interaction: discord.Interaction, class_id: int, person: discord.Member, reason: str):
+    async def waive(interaction: discord.Interaction, class_id: int | None = None, person: discord.Member | None = None, reason: str | None = None):
         bot.require_ta(interaction)
+        if class_id is None or person is None or reason is None:
+            return await ui.route(bot, interaction, 'waive', class_id=class_id)
         store.waive(class_id, person.id, interaction.user.id, reason)
         await interaction.response.send_message(
             "Penalty waived. For an absence, also mark /attendance excused.", ephemeral=True
@@ -749,6 +804,8 @@ def register_commands(bot):
     @tree.command(description="Show Al-Mizan standings for this month or a previous YYYY-MM")
     async def mizan(interaction: discord.Interaction, month: str | None = None):
         bot.check_guild(interaction)
+        if month is None:
+            return await ui.route(bot, interaction, 'mizan')
         month = month or month_of(store.clock(), store.tz)
         board = "\n".join(f"{safe(r['name'])}: **{r['points']:+d}**" for r in store.standings(month))
         await interaction.response.send_message(
@@ -771,15 +828,21 @@ def register_commands(bot):
         await interaction.response.send_message(
             "**Class status**\n"
             + ("\n".join(lines) or "No open classes.")
-            + f"\nRoster: {len(store.roster())}\nBeeminder: {'enabled' if bot.bee.configured() else 'not activated'}\nWUPHF: {'configured; opt-in required' if os.getenv('TWILIO_ACCOUNT_SID') else 'not configured'}\nSchedule: Saturday after Fajr congregation, IACC Plano. TA verifies each actual start time.",
+            + f"\nRoster: {len(store.roster())}\nBeeminder: {'enabled' if bot.bee.configured() else 'not activated'}\nWUPHF: {'configured; opt-in required' if os.getenv('TWILIO_ACCOUNT_SID') else 'not configured'}\nSchedule: Saturday after Fajr congregation, IACC Plano. Weekly invitations use the official IACC timetable, plus an adjustable after-prayer allowance. Use /standly for buttons.",
             ephemeral=True,
         )
 
     @tree.command(description="Privately choose SMS/call nudges and whether Fajr-time nudges are allowed")
     async def nudges(
-        interaction: discord.Interaction, sms: bool = False, calls: bool = False, allow_fajr: bool = False
+        interaction: discord.Interaction, sms: bool | None = None, calls: bool | None = None, allow_fajr: bool | None = None
     ):
         bot.check_guild(interaction)
+        if sms is None and calls is None and allow_fajr is None:
+            return await ui.route(bot, interaction, 'nudges')
+        current = store.get(f'nudges:{interaction.user.id}', {})
+        sms = current.get('sms',False) if sms is None else sms
+        calls = current.get('calls',False) if calls is None else calls
+        allow_fajr = current.get('early',False) if allow_fajr is None else allow_fajr
         bot.wuphf.consent(interaction.user.id, sms, calls, allow_fajr)
         await interaction.response.send_message(
             f"Your preferences: SMS {sms}, calls {calls}, Fajr/quiet-hours nudges {allow_fajr}. Use /nudges with both false to stop. Your number must be added privately in Railway; never post it in the channel.",
@@ -788,9 +851,11 @@ def register_commands(bot):
 
     @tree.command(description="TA: send an opted-in member an SMS or voice WUPHF (one per hour)")
     async def wuphf(
-        interaction: discord.Interaction, person: discord.Member, method: Literal["sms", "calls"] = "sms"
+        interaction: discord.Interaction, person: discord.Member | None = None, method: Literal["sms", "calls"] = "sms"
     ):
         bot.require_ta(interaction)
+        if person is None:
+            return await ui.route(bot, interaction, 'wuphf')
         upcoming = store.rows(
             "SELECT * FROM sessions WHERE status='scheduled' AND start_at>? ORDER BY start_at LIMIT 1",
             (stamp(store.clock() - timedelta(hours=2)),),
@@ -840,13 +905,18 @@ def register_commands(bot):
         )
         await interaction.response.send_message("Private class record export.", file=file, ephemeral=True)
 
-    @tree.command(description="Show Shaykh Standly's main commands")
+    @tree.command(description="TA: test with four simulated members, isolated records and mock providers")
+    async def testmode(interaction: discord.Interaction):
+        from .testing import open_test
+        await open_test(bot, interaction)
+
+    @tree.command(description="Open Shaykh Standly's buttons and menus")
+    async def standly(interaction: discord.Interaction):
+        await ui.route(bot, interaction, 'standly')
+
+    @tree.command(description="Open Shaykh Standly's buttons and menus")
     async def help(interaction: discord.Interaction):
-        bot.check_guild(interaction)
-        await interaction.response.send_message(
-            "**Everyone:** /nextclass /rsvp /report /mizan /resources /status /nudges\n**TA:** /member /schedule /poll /confirm_slot /cancel /attendance /classheld /reopen /waive /wuphf /beeminder /export\nWe meet in person. Accepted RSVPs are trusted; a TA confirms class happened before financial accounting. No voice tracking.\n**Rescheduling:** report → TA decides whether rest still meet → poll alternatives → TA confirms → everyone RSVPs again.",
-            ephemeral=True,
-        )
+        await ui.route(bot, interaction, 'help')
 
 
 def main():
