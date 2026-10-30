@@ -162,6 +162,10 @@ class Beeminder:
                     results.append(key + ": synced (confirmed previous delivery)")
                     continue
                 await self.validate(client, binding)
+                if month_of(self.store.clock(), self.store.tz) != month:
+                    raise RuleError(
+                        "Month-end window closed during provider checks; TA reconciliation required."
+                    )
                 # Stable requestid makes retries an upsert, not another financial failure.
                 data = await self.request(
                     client,

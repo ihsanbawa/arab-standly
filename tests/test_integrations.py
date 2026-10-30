@@ -136,6 +136,27 @@ def test_group_hiatus_does_not_remove_financial_responsibility(fixture):
     assert len(s.rows("SELECT * FROM deliveries")) == 4
 
 
+def test_no_financial_failure_posted_after_midnight(fixture):
+    s, c = fixture
+    b = Beeminder(s)
+    posts = []
+
+    async def fake(client, binding, method, path, data=None, user_resource=False):
+        if method == "POST":
+            posts.append(data)
+            raise AssertionError("Must not post after midnight")
+        if user_resource:
+            c[0] = parse_local("2026-11-01 00:01", s.tz)
+            return {"timezone": "America/Chicago"}
+        if path == ".json":
+            return valid_goal(s)
+        return []
+
+    b.request = fake
+    asyncio.run(b.sync(None, "2026-10"))
+    assert not posts
+
+
 def test_waiving_absence_retains_move_penalty(fixture):
     s, c = fixture
     c[0] = parse_local("2026-10-01 09:00", s.tz)
