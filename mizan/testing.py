@@ -29,6 +29,8 @@ class DemoChannel:
 
     async def send(self, content=None, **kwargs):
         content='🧪 **TEST ONLY — isolated class**\n'+(content or '')
+        if kwargs.get('view') is None:
+            kwargs.pop('view', None)
         kwargs['allowed_mentions']=discord.AllowedMentions.none()
         i=self.bot.current_interaction
         if not i.response.is_done():
@@ -86,6 +88,11 @@ class DemoBot(MizanBot):
         embed=super().card(sid)
         embed.title='🧪 TEST ONLY · '+embed.title
         return embed
+
+    async def respond_error(self, interaction, error):
+        error = getattr(error, 'original', error)
+        message = str(error) if isinstance(error, RuleError) else 'The test action did not finish. The test clock or records may have changed; use Test home to inspect or reset this rehearsal.'
+        await send(interaction, '🧪 **Test mode**\n' + message, TestControls(self.root, self))
 
     async def close(self):
         if self.demo_closed: return
@@ -213,7 +220,7 @@ async def clock_menu(demo,interaction):
                 demo.test_clock=target
                 await j.response.defer(ephemeral=True)
                 await demo.tick()
-                await j.followup.send('🧪 Test clock is now '+label(target)+'. Use class controls to record exceptions and confirm whether it happened. Real time and records are unchanged.',ephemeral=True)
+                await send(j, '🧪 **Test clock: '+label(target)+'**\nUse test class controls to record exceptions and confirm whether it happened. Real time and records are unchanged.', TestControls(demo.root, demo))
             times.button(title,moved)
         await send(i,'🧪 Choose a test time. Rewinding is allowed only here, to test early and last-minute changes.',times)
     view.select('Choose the test class',[discord.SelectOption(label=label(s['start_at']),value=str(s['id'])) for s in sessions[:25]],selected)

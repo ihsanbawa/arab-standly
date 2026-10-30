@@ -149,3 +149,50 @@ def test_compact_rsvp_updates_in_place_and_offers_rescheduling(root):
         assert not root.rows('SELECT * FROM sessions')
         await bot.close()
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('clock_label',['3 days before','1 hour before','After class ends'])
+def test_clock_buttons_handle_discords_no_empty_view_contract(root, clock_label):
+    from mizan.testing import clock_menu
+    async def run():
+        bot=MizanBot(root);i=interaction();await open_test(bot,i);demo=bot.test_sessions[100]
+        demo.store.set('weekly_invites',True);sid=ensure_weekly(demo.store);demo.store.set('weekly_invites',False)
+        await demo.update_card(sid,create=True)
+        await clock_menu(demo,i)
+        picker=i.response.send_message.call_args.kwargs['view'].children[0]
+        picker._values=[str(sid)]
+        j=interaction();await picker.callback(j)
+        controls=j.response.send_message.call_args.kwargs['view']
+        button=next(b for b in controls.children if b.label==clock_label)
+        k=interaction()
+        k.message=SimpleNamespace(flags=SimpleNamespace(ephemeral=True),embeds=[])
+        k.edit_original_response=AsyncMock()
+        def deferred(*args,**kwargs): k.response.is_done=lambda:True
+        k.response.defer.side_effect=deferred
+        async def strict_send(*args,**kwargs):
+            # Discord Webhook.send rejects an explicitly supplied None view.
+            if 'view' in kwargs and kwargs['view'] is None:
+                raise TypeError('expected view parameter to be of type View, not NoneType')
+            return SimpleNamespace(id=89,edit=AsyncMock())
+        k.followup.send.side_effect=strict_send
+        await button.callback(k)
+        assert 'Test clock:' in k.edit_original_response.call_args.kwargs['content']
+        assert not root.rows('SELECT * FROM sessions')
+        assert not root.rows('SELECT * FROM notices')
+        assert demo.store.monthly_count('2026-11')==0
+        await bot.close()
+    asyncio.run(run())
+
+
+def test_test_errors_offer_test_controls_without_live_status(root):
+    async def run():
+        bot=MizanBot(root);i=interaction();await open_test(bot,i)
+        j=interaction()
+        await bot.test_sessions[100].respond_error(j,TypeError('bad view'))
+        text=j.response.send_message.call_args.args[0]
+        assert '/status' not in text
+        assert 'Test mode' in text
+        view=j.response.send_message.call_args.kwargs['view']
+        assert any(b.label=='Reset test session' for b in view.children)
+        await bot.close()
+    asyncio.run(run())

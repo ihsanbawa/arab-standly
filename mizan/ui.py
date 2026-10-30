@@ -61,9 +61,9 @@ async def send(interaction, text, view=None):
         else:
             await interaction.response.edit_message(content=text, embed=None, view=view)
     elif interaction.response.is_done():
-        await interaction.followup.send(text, view=view, ephemeral=True)
+        await interaction.followup.send(text, ephemeral=True, **({'view': view} if view is not None else {}))
     else:
-        await interaction.response.send_message(text, view=view, ephemeral=True)
+        await interaction.response.send_message(text, ephemeral=True, **({'view': view} if view is not None else {}))
 
 
 class ConflictView(Menu):
