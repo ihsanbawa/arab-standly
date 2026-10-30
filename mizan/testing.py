@@ -7,7 +7,7 @@ import discord
 from .bot import MizanBot
 from .core import RuleError, Store, month_of
 from .prayer import ensure_weekly
-from .ui import Menu, Panel, label, send
+from .ui import ConflictView, Menu, Panel, RSVP_LABELS, label, safe, send
 from .wuphf import Wuphf
 
 
@@ -79,8 +79,8 @@ class DemoBot(MizanBot):
     async def channel(self):
         return self.demo_channel
 
-    async def notify(self,text):
-        return await self.demo_channel.send(text)
+    async def notify(self,text,view=None):
+        return await self.demo_channel.send(text,view=view)
 
     def card(self,sid):
         embed=super().card(sid)
@@ -130,29 +130,46 @@ class TestControls(Menu):
         self.button('Reset test session',reset,style=discord.ButtonStyle.danger)
 
 
-async def simulated_rsvp(demo,interaction):
+async def simulated_rsvp(demo, interaction, sid=None, uid=None, notice=''):
     demo.check_guild(interaction)
     sessions=demo.store.rows("SELECT * FROM sessions WHERE status='scheduled' ORDER BY start_at")
     if not sessions: raise RuleError('In test class controls, schedule a test class first.')
+    if sid is None and len(sessions)>1:
+        view=Menu(demo)
+        async def selected(i,v): await simulated_rsvp(demo,i,int(v))
+        view.select('Which test class?',[discord.SelectOption(label=label(s['start_at']),value=str(s['id'])) for s in sessions[:25]],selected)
+        return await send(interaction,'🧪 Choose the class to rehearse.',view)
+    sid=sid or sessions[0]['id']
+    revision=demo.store.session(sid)['revision']
+    people=demo.store.participants(sid)
+    uid=uid or people[0]['user_id']
+    person=next(p for p in people if p['user_id']==uid)
+    responses={r['user_id']:r['response'] for r in demo.store.responses(sid)}
     view=Menu(demo)
-    async def class_selected(i,value):
-        sid=int(value)
-        revision=demo.store.session(sid)['revision']
-        people=Menu(demo)
-        async def person_selected(j,uid):
-            options=Menu(demo)
-            async def response_selected(k,response):
-                demo.check_guild(k)
-                demo.store.rsvp(sid,int(uid),response,revision=revision)
-                await k.response.defer(ephemeral=True)
-                await demo.update_card(sid)
-                await k.followup.send(f'TEST: saved {response} for the simulated member. Real people were not contacted.',ephemeral=True)
-            options.select('Simulate their response',[discord.SelectOption(label=l,value=v) for l,v in [('Coming','coming'),('Running late','late'),("Can't attend",'unavailable'),('Request another time','change')]],response_selected)
-            await send(j,'🧪 Choose a simulated response.',options)
-        people.select('Play which member?',[discord.SelectOption(label=p['name'][:100],value=str(p['user_id'])) for p in demo.store.participants(sid)],person_selected)
-        await send(i,'🧪 Choose a simulated class member.',people)
-    view.select('Which test class?',[discord.SelectOption(label=label(s['start_at']),value=str(s['id'])) for s in sessions[:25]],class_selected)
-    await send(interaction,'🧪 You can answer for each of the four members without needing their accounts.',view)
+    async def selected(i,v): await simulated_rsvp(demo,i,sid,int(v))
+    view.select('Act as a member',[discord.SelectOption(label=p['name'][:100],value=str(p['user_id']),default=p['user_id']==uid) for p in people],selected)
+    for response,title in [('coming','Coming'),('late','Running late'),('unavailable',"Can't attend"),('change','Request another time')]:
+        async def answer(i,value=response):
+            demo.check_guild(i)
+            demo.store.rsvp(sid,uid,value,revision=revision)
+            await i.response.defer()
+            await demo.update_card(sid)
+            await simulated_rsvp(demo,i,sid,uid,f"Saved: **{safe(person['name'])} — {RSVP_LABELS[value]}**.")
+        view.button(title,answer,style=discord.ButtonStyle.success if response=='coming' else discord.ButtonStyle.secondary)
+    conflicts=[p for p in people if responses.get(p['user_id']) in {'unavailable','change'}]
+    text=f"🧪 **Rehearse RSVPs · {label(demo.store.session(sid)['start_at'])}**\nActing as **{safe(person['name'])}**. Pick a member and tap their response.\n\n"
+    text+='\n'.join(f"{safe(p['name'])}: **{RSVP_LABELS.get(responses.get(p['user_id']),'Not answered')}**" for p in people)
+    if notice: text+='\n\n'+notice
+    if conflicts:
+        controls=ConflictView(demo,sid,revision)
+        for item in list(controls.children):
+            controls.remove_item(item)
+            item.row=2
+            view.add_item(item)
+        text+='\n\n**Scheduling conflict:** '+', '.join(safe(p['name']) for p in conflicts)+'.\nAs TA, keep the original time if the rest can meet, or find alternatives. Reporting alone assigns no penalty.'
+    async def home(i): await open_test(demo.root,i)
+    view.button('Test home',home)
+    await send(interaction,text,view)
 
 
 async def simulated_votes(demo,interaction):
@@ -168,9 +185,11 @@ async def simulated_votes(demo,interaction):
             async def slot_selected(k,slot):
                 demo.check_guild(k)
                 demo.store.vote(p['id'],int(uid),int(slot))
-                await k.response.defer(ephemeral=True)
+                await k.response.defer()
                 await demo.update_poll(p['id'])
-                await k.followup.send('TEST: toggled the simulated member’s availability. Select again to toggle it back.',ephemeral=True)
+                await send(k,'🧪 Availability updated. Choose another option to toggle it, or return to choose another member.',options)
+            async def another(k): await simulated_votes(demo,k)
+            options.button('Choose another member',another)
             options.select('Mark an option available',[discord.SelectOption(label=label(d),value=str(n)) for n,d in enumerate(p['options'])],slot_selected)
             await send(j,'🧪 Toggle every option this member can attend.',options)
         people.select('Play which member?',[discord.SelectOption(label=m['name'][:100],value=str(m['user_id'])) for m in demo.store.participants(p['session_id'])],person_selected)

@@ -11,6 +11,9 @@ from .core import RuleError, month_of, parse_local, stamp
 from .prayer import LOCATION, SOURCE, TIMETABLE, defaults, fajr_slot, upcoming
 
 
+RSVP_LABELS = {'coming':'Coming', 'late':'Running late', 'unavailable':"Can't attend", 'change':'Requested another time'}
+
+
 def safe(value):
     return discord.utils.escape_mentions(discord.utils.escape_markdown(str(value)))
 
@@ -49,7 +52,37 @@ class Menu(discord.ui.View):
 
 
 async def send(interaction, text, view=None):
-    await interaction.response.send_message(text, view=view, ephemeral=True)
+    message = getattr(interaction, 'message', None)
+    private_menu = bool(getattr(getattr(message, 'flags', None), 'ephemeral', False)) and not getattr(message, 'embeds', [])
+    if private_menu:
+        # Keep guided menus in place; never replace the public panel or a class card.
+        if interaction.response.is_done():
+            await interaction.edit_original_response(content=text, embed=None, view=view)
+        else:
+            await interaction.response.edit_message(content=text, embed=None, view=view)
+    elif interaction.response.is_done():
+        await interaction.followup.send(text, view=view, ephemeral=True)
+    else:
+        await interaction.response.send_message(text, view=view, ephemeral=True)
+
+
+class ConflictView(Menu):
+    def __init__(self, bot, sid, revision):
+        super().__init__(bot, persistent=True)
+        async def keep(i):
+            bot.require_ta(i)
+            guarded(bot, sid, revision)
+            if bot.store.session(sid)['status'] != 'scheduled':
+                raise RuleError('This class is no longer scheduled. Open Class controls.')
+            with bot.store.db:
+                bot.store.log(i.user.id, 'original_time_kept', {'session': sid})
+            await send(i, 'Original time kept. The rest can still meet; no penalty was assigned. You can review attendance after class.')
+        async def alternatives(i):
+            bot.require_ta(i)
+            guarded(bot, sid, revision)
+            await poll_preview(bot, i, sid)
+        self.button('Keep original time', keep, custom_id=f'standly:keep:{sid}:{revision}')
+        self.button('Find alternative times', alternatives, custom_id=f'standly:alternatives:{sid}:{revision}', style=discord.ButtonStyle.primary)
 
 
 async def invoke(bot, interaction, name, **kwargs):

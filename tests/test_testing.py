@@ -14,7 +14,7 @@ def interaction(uid=100,ta=True):
     msg=SimpleNamespace(id=88,edit=AsyncMock())
     return SimpleNamespace(guild_id=123,user=SimpleNamespace(id=uid,display_name='TA',roles=[]),
         permissions=SimpleNamespace(manage_guild=ta),
-        response=SimpleNamespace(send_message=AsyncMock(),send_modal=AsyncMock(),defer=AsyncMock(),is_done=lambda:True),
+        response=SimpleNamespace(send_message=AsyncMock(),send_modal=AsyncMock(),defer=AsyncMock(),is_done=lambda:False),
         followup=SimpleNamespace(send=AsyncMock(return_value=msg)))
 
 
@@ -115,5 +115,37 @@ def test_test_mode_is_private_to_the_ta_and_reset_invalidates_old_controls(root)
         with pytest.raises(RuleError,match='reset'):
             demo.check_guild(i)
         assert not bot.test_sessions[100].store.rows('SELECT * FROM sessions')
+        await bot.close()
+    asyncio.run(run())
+
+
+def test_compact_rsvp_updates_in_place_and_offers_rescheduling(root):
+    from mizan.testing import simulated_rsvp
+    async def run():
+        bot=MizanBot(root);i=interaction();await open_test(bot,i);demo=bot.test_sessions[100]
+        demo.store.set('weekly_invites',True);sid=ensure_weekly(demo.store);demo.store.set('weekly_invites',False)
+        await demo.update_card(sid,create=True)
+        compact=interaction()
+        compact.message=SimpleNamespace(flags=SimpleNamespace(ephemeral=True),embeds=[])
+        compact.response.edit_message=AsyncMock()
+        await simulated_rsvp(demo,compact,sid,2)
+        compact.response.send_message.assert_not_called()
+        view=compact.response.edit_message.call_args.kwargs['view']
+        assert len([x for x in view.children if isinstance(x, __import__('discord').ui.Select)])==1
+        answer=next(b for b in view.children if getattr(b,'label',None)=='Request another time')
+        result=interaction()
+        result.message=compact.message
+        result.response.is_done=lambda:True
+        result.edit_original_response=AsyncMock()
+        await answer.callback(result)
+        content=result.edit_original_response.call_args.kwargs['content']
+        assert 'Requested another time' in content
+        assert 'Scheduling conflict' in content
+        controls=result.edit_original_response.call_args.kwargs['view']
+        assert {'Keep original time','Find alternative times'} <= {getattr(b,'label',None) for b in controls.children}
+        result.followup.send.assert_not_called()
+        assert demo.store.session(sid)['status']=='scheduled'
+        assert not demo.store.rows('SELECT * FROM ledger')
+        assert not root.rows('SELECT * FROM sessions')
         await bot.close()
     asyncio.run(run())

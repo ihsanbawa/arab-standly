@@ -58,7 +58,8 @@ class ClassView(discord.ui.View):
                 )
                 if response in {"unavailable", "change"}:
                     await bot.notify(
-                        f"Class #{sid}: <@{interaction.user.id}> selected **{response}**. TA: keep the time or open /poll. The class has not been cancelled."
+                        f"<@{interaction.user.id}>: **{ui.RSVP_LABELS[response]}** for class #{sid}.\nTA: can the rest still meet, or should we find another time? The original class remains scheduled.",
+                        view=ui.ConflictView(bot, sid, revision)
                     )
 
             button.callback = callback
@@ -222,10 +223,10 @@ class MizanBot(discord.Client):
         cid = self.store.get("channel_id")
         return self.get_channel(cid) or await self.fetch_channel(cid) if cid else None
 
-    async def notify(self, text):
+    async def notify(self, text, view=None):
         channel = await self.channel()
         if channel:
-            return await channel.send(text[:1950])
+            return await channel.send(text[:1950], view=view)
 
     async def notify_once(self, key, text):
         if self.store.notice_sent(key):
@@ -251,7 +252,7 @@ class MizanBot(discord.Client):
         embed.add_field(
             name="RSVPs · not attendance",
             value="\n".join(
-                f"{safe(m['name'])}: {responses.get(m['user_id'], 'Not answered')}"
+                f"{safe(m['name'])}: {ui.RSVP_LABELS.get(responses.get(m['user_id']), 'Not answered')}"
                 for m in self.store.participants(sid)
             )[:1000]
             or "No roster",
@@ -346,6 +347,7 @@ class MizanBot(discord.Client):
             "SELECT * FROM sessions WHERE status='scheduled' AND message_id IS NOT NULL"
         ):
             self.add_view(ClassView(self, s["id"], s["revision"]), message_id=s["message_id"])
+            self.add_view(ui.ConflictView(self, s["id"], s["revision"]))
         for p in self.store.rows(
             "SELECT id,options,message_id FROM polls WHERE status='open' AND message_id IS NOT NULL"
         ):
@@ -637,7 +639,8 @@ def register_commands(bot):
         )
         if response in {"unavailable", "change"}:
             await bot.notify(
-                f"Class #{class_id}: <@{interaction.user.id}> reports **{response}**. {safe(note)}\nTA: keep the time or /poll."
+                f"<@{interaction.user.id}>: **{ui.RSVP_LABELS[response]}** for class #{class_id}. {safe(note)}\nTA: keep the original time or find alternatives.",
+                view=ui.ConflictView(bot, class_id, store.session(class_id)["revision"])
             )
 
     @tree.command(description="Report a missing person, last-minute conflict, or class that did not happen")
