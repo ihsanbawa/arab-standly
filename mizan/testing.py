@@ -123,7 +123,6 @@ class AdvancedControls(Menu):
             await i.response.defer(ephemeral=True)
             await demo.update_card(sid,create=True)
             await i.followup.send('TEST: weekly invite simulated. Click the RSVP buttons as yourself, or use Play the other members.',ephemeral=True)
-        self.button('Simulate weekly invitation',weekly)
         async def finance(i):
             demo.check_guild(i)
             month=month_of(demo.store.clock(),demo.store.tz)
