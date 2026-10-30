@@ -185,7 +185,7 @@ def test_scheduler_does_not_repeat_reminders_or_award_from_rsvp(fixture, monkeyp
         s.set("weekly_invites", False)
         messages = []
 
-        async def notify(text):
+        async def notify(text, **kwargs):
             messages.append(text)
             return SimpleNamespace(id=1)
 

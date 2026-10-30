@@ -5,14 +5,16 @@ A Discord bot for a four-person **in-person** Arabic class. Coordinates Saturday
 ## Included
 
 - A persistent button panel: schedule, RSVP, class controls, scores, links, roster, private nudge preferences and TA settings. Every slash command works with no required arguments; structured menus guide any remaining choices.
-- Automatic weekly Saturday invitations once the four-person roster is registered.
+- Automatic Wednesday 6 PM (Dallas time) RSVP invitations for Saturday, once the four-person roster is registered.
+- Exactly two RSVP buttons: **I can come / I can’t**. Declines require a replacement suggestion, automatically open or extend a group availability poll, and apply one Al-Mizan deduction.
+- After-class TA recap prompt; completed lesson, next lesson and preparation carry into the following invitation.
 - Class announcement cards with physical location, topic, preparation, RSVP deadline, and Quizlet links.
 - Persistent RSVP and multi-select replacement-poll buttons; they work after restarts.
 - RSVP nudges, conflict notifications, day-before and one-hour reminders.
 - TA-confirmed rescheduling: polls never silently cancel the original class. New time requires new RSVPs.
 - Trust-based attendance: no routine roll call if everyone accepted. TA confirms class actually happened after its scheduled end; accepted participants count as present unless exceptions were recorded.
 - Disruption reports from participants. Reporter is never automatically blamed or deducted.
-- Al-Mīzān: attend +1; causing a move after accepting −1; last-minute move/unexcused absence −2. One strongest disruption penalty per person per class, not stacked penalties. Excuses/waivers and corrections supported.
+- Al-Mīzān: attend +1; cannot attend −1, or −2 within 24 hours; causing a move after accepting −1; last-minute move/unexcused absence −2. One strongest disruption penalty per person per class, not stacked penalties. Excuses/waivers and corrections supported.
 - Monthly standings start at zero without deleting previous months.
 - Curated Arabic roasts with translation reveals and vocabulary notes.
 - Shared minimum of two classes per calendar month, at-risk alerts, unresolved-makeup reminders.
@@ -46,30 +48,29 @@ cp .env.example .env
 
 ## Everyday flow
 
-1. Use the permanent **Shaykh Standly** panel in `#class-announcements`, or open `/standly` or `/help`.
-2. **Class roster**: select the four people in one picker; use **Add me** for yourself. A hiatus affects future classes only.
-3. The bot automatically announces the upcoming Saturday once the roster is complete, then opens the next week's invitation after Saturday's start. **Schedule class** also previews a Saturday with location, duration, lesson and preparation already filled. Tap **Announce & ask for RSVPs**, select a different Saturday, or edit the filled form. Existing weeks are not duplicated after a move, cancellation or restart.
-4. Everyone taps **Coming / Running late / Can't attend / Request another time**. Invitations mention each roster member. RSVP deadline defaults to 48 hours before class, or soon if scheduled late. Discord reminders and unanswered-RSVP nudges follow automatically.
-5. **TA class controls** on the invitation (or **Class controls** on the panel) lets you record attendance exceptions and confirm **Class happened**. Accepted RSVPs count as present only after that confirmation. No routine roll call.
-6. **Reschedule / poll** proposes two Saturdays and an optional Sunday using the official IACC iqamah times. Tap to post or edit three separately labeled fields. Poll deadline defaults to 24 hours, ending at least one hour before its earliest option. Class stays unchanged until a TA confirms a replacement.
-7. **Confirm poll time**: pick the poll, new time and responsibility (defaults to an explicit **No individual penalty** choice). Review known conflicts and any score consequence, then confirm. Everyone RSVPs again.
-8. **Class didn't happen**, attendance penalties, reopening and sending WUPHF all show a review before applying. Reports and penalty waivers ask only for a short reason. Reporting a conflict does not assign blame.
-9. **Al-Mizan** has a month picker. **My nudges** has independent SMS, calls and Fajr-hours toggles. **TA settings** controls the after-prayer allowance, default lesson/prep, weekly invitations, status, Beeminder checks and private exports.
+1. Use the permanent **Shaykh Standly** panel or `/standly`. Invite the four people, then select them with **Class roster**.
+2. Every **Wednesday at 6 PM America/Chicago**, the bot announces Saturday’s class at IACC after Fajr. If setup happens later in the week it catches up. It uses verified IACC iqamah + an adjustable 15 minutes, for a 60-minute class.
+3. The class card has exactly **I can come / I can’t**. No separate late/change/report controls on that invitation. TA actions remain on the main panel and post-class prompt.
+4. **I can’t** records −1 (−2 within 24 hours), immediately opens a replacement-time picker, and posts a curated Arabic roast. Pick a suggested date or enter a custom Dallas date/time. The bot automatically posts an availability poll and marks the proposer available. Subsequent suggestions extend the same open poll without erasing existing votes, up to five alternatives. Closing the picker leaves a visible pending suggestion; the bot nudges them after 12 hours. No one can propose on behalf of another member outside Test mode.
+5. Others vote; a TA confirms any move using **TA · confirm new time** on the poll. No automatic cancellation or relocation. A new time requires fresh RSVPs. Only the strongest deduction counts per person/class; repeated clicks cannot stack deductions. Marking an emergency excused removes the decline/absence penalty; a separate confirmed-move penalty requires a waiver.
+6. After class ends, the bot nudges the TA: **Did class happen? What did we cover, and what comes next?** Tap **Class happened · add recap** and fill in completed work, next lesson and optional prep. Accepted RSVPs count as present; use **Attendance exception** for anyone else. An unresolved attendance record saves the recap as a draft and offers controls to finish it.
+7. Confirming the recap records the held class and attendance points once. The next Wednesday’s card includes **Where we left off**, the next lesson, preparation, and practice links. If next week was manually announced early, saving the recap refreshes its lesson details too. Older recaps cannot override a newer lesson handoff.
+8. A class with no recap prompts the TA again on following days after 9 AM. A class that did not happen uses **Class didn’t happen** and a replacement poll, without earning held-class credit.
 
-Financially audited months remain sealed; no menu bypasses the existing audit guards. Excused/partial attendance earns zero. A confirmed accepted-commitment move is −1 (−2 last minute); a no-show is −2, with only the strongest disruption penalty per person/class.
+Financially audited months retain their existing protections. Individual scores and the group’s two-held-classes monthly commitment remain separate. Beeminder and WUPHF still require their private configuration and participant opt-ins.
 
-### Test mode (one-person rehearsal)
+### Rehearse the whole week alone
 
-Tap **Test mode** on the live panel or open `/testmode`. TA access is checked on every test interaction. Each TA gets a separate in-memory class with themselves and three simulated members. All test outputs are private, visibly marked TEST ONLY, and suppress mentions.
+Open **Test mode** or `/testmode`. The primary controls are now four numbered steps:
 
-- **Simulate weekly invitation** or use **Open test class controls → Schedule class**. The normal scheduling/attendance/rescheduling/score menus operate on the test database.
-- **Play the other members** simulates each person's RSVP; **Play poll votes** toggles each person's availability without needing their account.
-- **Move test clock** jumps to three days before class, one hour before, or after its end, allowing reminder, late-change and class-held flows to be rehearsed.
-- **Preview group commitment** shows the same shared monthly success/failure idea; unresolved classes block the mock audit.
-- WUPHF uses mock delivery, while exercising the real opt-in, quiet-hour and frequency checks. No phone number or Twilio credentials are needed for testing. Beeminder is disabled in test mode, regardless of live configuration; no goals, financial datapoints or charges are created.
-- **Reset test session** discards everything and invalidates older test controls. Test records also disappear on deployment/restart. The live scheduler never processes test sessions.
+1. **Run midweek RSVP** moves the test clock to Wednesday at 6 PM and runs the actual automatic check-in.
+2. **Answer as members** lets you play all four people with the same two responses. Test declines deduct test points and require a replacement time; a private test poll opens automatically.
+3. **Jump after class** runs the actual post-class prompt. Record any attendance exceptions, then fill in the recap and next lesson.
+4. **Next week’s announcement** runs the next Wednesday and shows the carried lesson details.
 
-Use the normal server panel for real actions. Test mode's controls cannot reach the live class database or real announcement channel.
+**Other test tools** retains clock jumps, poll-voter simulation, private nudge settings and the mock group-commitment preview. **Reset test session** starts over.
+
+Each TA gets separate in-memory records. Test messages are private, marked TEST ONLY, and suppress mentions. Live members, records, SMS/calls and Beeminder writes are untouched. WUPHF delivery is mocked while keeping the consent, quiet-hour and frequency checks. Test records disappear on reset or deployment. Test errors stay inside test controls rather than directing the user to live `/status`.
 
 ### Prayer-relative schedule
 
@@ -77,7 +78,7 @@ The bundled snapshot comes from the [official 2026 IACC timetable](https://plano
 
 Timezone is `America/Chicago`, including the November clock change. New classes default to **Saturday, iqamah + 15 minutes, 60 minutes at IACC Plano**. The 15 minutes is an adjustable class-planning allowance, not a published prayer end time. Settings offer 10/15/20/30 minutes; existing invitations never silently move. Examples: October 31 iqamah 06:45 CDT → class 07:00; November 7 iqamah 06:00 CST → class 06:15; November 21 iqamah 06:15 CST → class 06:30.
 
-A new verified timetable must be loaded before 2027. The bot alerts the TA and refuses to reuse old-year times. A TA can still enter a verified custom time through the scheduling form. Weekly invitations require exactly four active roster members and can be paused in TA settings. It creates one regular invitation for each Saturday's week, with persistent deduplication, and retries an unposted invitation after a restart without creating a second class. Scores and financial credit are never inferred from creating an invitation.
+A new verified timetable must be loaded before 2027. The bot alerts the TA and refuses to reuse old-year times. A TA can still enter a verified custom time through the scheduling form. Wednesday 6 PM invitations require exactly four active roster members and can be paused in TA settings. It creates one regular invitation for each Saturday's week, with persistent deduplication, and retries an unposted invitation after a restart without creating a second class. Scores and financial credit are never inferred from creating an invitation.
 
 ### Commands
 

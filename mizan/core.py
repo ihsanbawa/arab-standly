@@ -106,6 +106,13 @@ CREATE TABLE IF NOT EXISTS notices(key TEXT PRIMARY KEY,sent_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS audit(
  id INTEGER PRIMARY KEY AUTOINCREMENT,actor INTEGER NOT NULL,action TEXT NOT NULL,
  details TEXT NOT NULL,created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS replacement_requests(
+ session_id INTEGER NOT NULL,revision INTEGER NOT NULL,user_id INTEGER NOT NULL,
+ proposed_at TEXT,state TEXT NOT NULL DEFAULT 'pending',updated_at TEXT NOT NULL,
+ PRIMARY KEY(session_id,revision,user_id));
+CREATE TABLE IF NOT EXISTS lesson_notes(
+ session_id INTEGER PRIMARY KEY,revision INTEGER NOT NULL,recap TEXT NOT NULL,
+ next_lesson TEXT NOT NULL,prep TEXT NOT NULL,actor INTEGER NOT NULL,updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS deliveries(
  month TEXT NOT NULL,binding TEXT NOT NULL,value INTEGER NOT NULL,
  state TEXT NOT NULL DEFAULT 'pending',request_id TEXT NOT NULL,datapoint_id TEXT,
@@ -264,6 +271,60 @@ class Store:
                 )
             self.log(uid, "rsvp", {"session": sid, "response": response})
 
+    def answer(self, sid, uid, coming, revision=None):
+        s = self.session(sid)
+        self.ensure_unsealed(s)
+        self.rsvp(sid, uid, 'coming' if coming else 'unavailable', revision=revision)
+        with self.transaction():
+            if coming:
+                self.db.execute("UPDATE replacement_requests SET state='withdrawn' WHERE session_id=? AND revision=? AND user_id=?", (sid,s['revision'],uid))
+            else:
+                points = -2 if datetime.fromisoformat(s['start_at'])-self.clock()<timedelta(hours=24) else -1
+                self.penalty(sid,uid,points,"Can't attend scheduled class",uid)
+                self.db.execute("INSERT INTO replacement_requests VALUES(?,?,?,NULL,'pending',?) ON CONFLICT(session_id,revision,user_id) DO UPDATE SET state=CASE WHEN proposed_at IS NULL THEN 'pending' ELSE 'suggested' END,updated_at=excluded.updated_at", (sid,s['revision'],uid,stamp(self.clock())))
+        return self.one('SELECT points FROM penalties WHERE session_id=? AND user_id=?',(sid,uid))
+
+    def suggest(self, sid, uid, proposed, revision):
+        s=self.session(sid)
+        self.ensure_participant(sid,uid)
+        self.ensure_unsealed(s)
+        if s['revision']!=revision or s['status']!='scheduled':
+            raise RuleError('This class changed. Open its current invitation.')
+        response=self.one('SELECT response FROM rsvps WHERE session_id=? AND revision=? AND user_id=?',(sid,revision,uid))
+        if not response or response['response'] not in {'unavailable','change'}:
+            raise RuleError("Choose I can't before suggesting a replacement.")
+        if proposed<=self.clock()+timedelta(minutes=5) or stamp(proposed)==s['start_at']:
+            raise RuleError('Choose a different time at least five minutes in the future.')
+        p=self.one("SELECT id FROM polls WHERE session_id=? AND revision=? AND status='open' AND deadline>? ORDER BY id DESC LIMIT 1",(sid,revision,stamp(self.clock())))
+        options=self.poll(p['id'])['options'] if p else []
+        if stamp(proposed) not in options:
+            if len(options)>=5: raise RuleError('The poll already has five times. Pick one of those or ask the TA to restart it.')
+            options.append(stamp(proposed))
+        due=min(self.clock()+timedelta(hours=24),min(datetime.fromisoformat(x) for x in options)-timedelta(minutes=1))
+        with self.transaction():
+            if p:
+                pid=p['id']
+                self.db.execute('UPDATE polls SET options=?,deadline=? WHERE id=?',(json.dumps(options),stamp(due),pid))
+            else:
+                pid=self.open_poll(sid,options,due,uid)
+            self.db.execute("INSERT INTO replacement_requests VALUES(?,?,?,?,'suggested',?) ON CONFLICT(session_id,revision,user_id) DO UPDATE SET proposed_at=excluded.proposed_at,state='suggested',updated_at=excluded.updated_at",(sid,revision,uid,stamp(proposed),stamp(self.clock())))
+            self.db.execute('DELETE FROM votes WHERE poll_id=? AND user_id=? AND slot=-1',(pid,uid))
+            self.db.execute('INSERT OR IGNORE INTO votes VALUES(?,?,?)',(pid,uid,options.index(stamp(proposed))))
+            self.log(uid,'replacement_suggested',{'session':sid,'time':stamp(proposed),'poll':pid})
+        return pid
+
+    def save_lesson(self,sid,actor,recap,next_lesson,prep=''):
+        s=self.session(sid)
+        if not recap.strip() or not next_lesson.strip():
+            raise RuleError('Tell us what you covered and what comes next.')
+        self.held(sid,actor)
+        with self.transaction():
+            self.db.execute('INSERT INTO lesson_notes VALUES(?,?,?,?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET revision=excluded.revision,recap=excluded.recap,next_lesson=excluded.next_lesson,prep=excluded.prep,actor=excluded.actor,updated_at=excluded.updated_at', (sid,s['revision'],recap.strip(),next_lesson.strip(),prep.strip(),actor,stamp(self.clock())))
+            self.log(actor,'lesson_recap_saved',{'session':sid})
+
+    def latest_lesson(self,before):
+        return self.one("SELECT n.*,s.start_at FROM lesson_notes n JOIN sessions s ON s.id=n.session_id WHERE s.status='held' AND n.revision=s.revision AND s.start_at<? ORDER BY s.start_at DESC LIMIT 1",(stamp(before),))
+
     def responses(self, sid):
         s = self.session(sid)
         return self.rows("SELECT * FROM rsvps WHERE session_id=? AND revision=?", (sid, s["revision"]))
@@ -273,8 +334,8 @@ class Store:
         if s["status"] not in ("scheduled", "needs_replacement"):
             raise RuleError("Only scheduled or unresolved classes can be moved.")
         self.ensure_unsealed(s)
-        if not 2 <= len(options) <= 5 or len(set(options)) != len(options):
-            raise RuleError("Supply 2–5 different proposed times.")
+        if not 1 <= len(options) <= 5 or len(set(options)) != len(options):
+            raise RuleError("Supply 1–5 different proposed times.")
         if not self.clock() < deadline < min(datetime.fromisoformat(x) for x in options):
             raise RuleError("Poll must close in the future and before every proposed time.")
         with self.transaction():
@@ -321,7 +382,7 @@ class Store:
     def penalty(self, sid, uid, points, reason, actor):
         """One disruption penalty per person/class. The strongest replaces the weaker."""
         self.ensure_participant(sid, uid)
-        cause = "absence" if reason == "Unexcused absence" else "disruption"
+        cause = "absence" if reason == "Unexcused absence" else "decline" if reason == "Can't attend scheduled class" else "disruption"
         self.db.execute(
             "INSERT INTO penalty_causes VALUES(?,?,?,?,?,?) ON CONFLICT(session_id,user_id,cause) DO UPDATE SET points=MIN(points,excluded.points),reason=excluded.reason",
             (sid, uid, cause, points, reason, month_of(self.clock(), self.tz)),
@@ -450,6 +511,8 @@ class Store:
                     "DELETE FROM penalty_causes WHERE session_id=? AND user_id=? AND cause='absence'",
                     (sid, uid),
                 )
+                if status == 'excused':
+                    self.db.execute("DELETE FROM penalty_causes WHERE session_id=? AND user_id=? AND cause='decline'",(sid,uid))
                 self.refresh_penalty(sid, uid, actor)
             if s["status"] == "held":
                 pts = 1 if status == "present" else 0

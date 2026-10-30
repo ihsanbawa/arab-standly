@@ -39,9 +39,10 @@ def upcoming(store, count=4):
 def defaults(store, start=None):
     dt = start or upcoming(store, 1)[0]
     day = dt.astimezone(ZoneInfo('America/Chicago')).date()
+    previous=store.latest_lesson(dt)
     return dict(start=dt, duration=60, location=LOCATION,
-                topic=store.get('class_topic', 'Arabic class · continue our current lesson'),
-                prep=store.get('class_prep', 'Bring the textbook, exercise book, and vocabulary book.'))
+                topic=previous['next_lesson'] if previous else store.get('class_topic', 'Arabic class · continue our current lesson'),
+                prep=previous['prep'] if previous and previous['prep'] else store.get('class_prep', 'Bring the textbook, exercise book, and vocabulary book.'))
 
 
 def ensure_weekly(store):
@@ -50,6 +51,9 @@ def ensure_weekly(store):
         return None
     dt = upcoming(store, 1)[0]
     day = dt.astimezone(ZoneInfo('America/Chicago')).date()
+    check_in = datetime.combine(day-timedelta(days=3), datetime.min.time(), ZoneInfo('America/Chicago'))+timedelta(hours=18)
+    if store.clock()<check_in:
+        return None
     key = f'weekly:{day.isoformat()}'
     existing = store.get(key)
     if existing:

@@ -11,7 +11,7 @@ from .core import RuleError, month_of, parse_local, stamp
 from .prayer import LOCATION, SOURCE, TIMETABLE, defaults, fajr_slot, upcoming
 
 
-RSVP_LABELS = {'coming':'Coming', 'late':'Running late', 'unavailable':"Can't attend", 'change':'Requested another time'}
+RSVP_LABELS = {'coming':'I can come', 'late':'I can come', 'unavailable':"I can't", 'change':"I can't"}
 
 
 def safe(value):
@@ -269,13 +269,16 @@ async def class_action(bot, interaction, action, sid):
     if action=='manage':
         view=Menu(bot)
         for name,a in [('Reschedule / poll','poll'),('Attendance exception','attendance'),
-                       ('Class happened','classheld'),("Class didn't happen",'cancel'),
+                       ('Class happened · add recap','recap'),("Class didn't happen",'cancel'),
                        ('Reopen confirmation','reopen'),('Waive penalty','waive'),('Confirm poll time','confirm_slot')]:
             async def clicked(i,action=a):
                 guarded(bot,sid,rev)
                 await class_action(bot,i,action,sid)
             view.button(name,clicked)
         await send(interaction,f"**Class controls · {label(s['start_at'])}**\n{safe(s['topic'])} · {s['status'].replace('_',' ')}",view)
+    elif action=='recap':
+        from .flow import Recap
+        await send(interaction, 'What did we cover, and what is next?', Recap(bot,sid,rev))
     elif action=='poll':
         await poll_preview(bot,interaction,sid)
     elif action=='confirm_slot':
@@ -393,7 +396,7 @@ async def roster_menu(bot, interaction, active=True):
         bot.store.member(i.user.id,i.user.display_name)
         await send(i,'You are on the roster. Invite the other three, then select them here.')
     view.button('Add me',me)
-    await send(interaction,'**Class roster**\n'+('\n'.join(safe(p['name']) for p in bot.store.roster()) or 'No members yet.')+'\nChoose up to four people at once. Weekly invitations begin automatically when all four are on the roster.',view)
+    await send(interaction,'**Class roster**\n'+('\n'.join(safe(p['name']) for p in bot.store.roster()) or 'No members yet.')+'\nChoose up to four people at once. Wednesday 6 PM invitations begin automatically when all four are on the roster.',view)
 
 
 async def nudge_preferences(bot,interaction):
@@ -451,7 +454,7 @@ async def settings_menu(bot,interaction):
             ('Current lesson',bot.store.get('class_topic','Arabic class · continue our current lesson'),True,''),
             ('Preparation',bot.store.get('class_prep','Bring all three books.'),False,'')],submitted))
     view.button('Default lesson / prep',lesson)
-    await send(interaction,f"**Class settings**\nWeekly invitations: {'ON (waiting for four roster members)' if bot.store.get('weekly_invites',True) and len(bot.store.roster())!=4 else 'ON' if bot.store.get('weekly_invites',True) else 'paused'}.\nSaturday · IACC · 60 minutes · iqamah + {bot.store.get('fajr_offset',15)} minutes.\n[Official calendar]({SOURCE}) loaded for Oct–Dec 2026; later dates require a verified timetable or custom time. Existing invitations never silently change.",view)
+    await send(interaction,f"**Class settings**\nWednesday 6 PM invitations: {'ON (waiting for four roster members)' if bot.store.get('weekly_invites',True) and len(bot.store.roster())!=4 else 'ON' if bot.store.get('weekly_invites',True) else 'paused'}.\nSaturday · IACC · 60 minutes · iqamah + {bot.store.get('fajr_offset',15)} minutes.\n[Official calendar]({SOURCE}) loaded for Oct–Dec 2026; later dates require a verified timetable or custom time. Existing invitations never silently change.",view)
 
 
 async def route(bot,interaction,action,**kwargs):

@@ -33,63 +33,7 @@ def when(iso):
     return f"<t:{int(datetime.fromisoformat(iso).timestamp())}:F>"
 
 
-class ClassView(discord.ui.View):
-    def __init__(self, bot, sid, revision):
-        super().__init__(timeout=None)
-        self.bot = bot
-        for label, value, style in [
-            ("Coming", "coming", discord.ButtonStyle.success),
-            ("Running late", "late", discord.ButtonStyle.primary),
-            ("Can't attend", "unavailable", discord.ButtonStyle.secondary),
-            ("Request another time", "change", discord.ButtonStyle.secondary),
-        ]:
-            button = discord.ui.Button(
-                label=label, style=style, custom_id=f"mizan:rsvp:{sid}:{revision}:{value}"
-            )
-
-            async def callback(interaction, response=value):
-                await interaction.response.defer(ephemeral=True)
-                bot.check_guild(interaction)
-                bot.store.rsvp(sid, interaction.user.id, response, revision=revision)
-                await bot.update_card(sid)
-                await interaction.followup.send(
-                    "Saved. Notice is not automatically an excused absence. Use /report if plans break down.",
-                    ephemeral=True,
-                )
-                if response in {"unavailable", "change"}:
-                    await bot.notify(
-                        f"<@{interaction.user.id}>: **{ui.RSVP_LABELS[response]}** for class #{sid}.\nTA: can the rest still meet, or should we find another time? The original class remains scheduled.",
-                        view=ui.ConflictView(bot, sid, revision)
-                    )
-
-            button.callback = callback
-            self.add_item(button)
-        report = discord.ui.Button(
-            label="Report a problem",
-            custom_id=f"mizan:report:{sid}:{revision}",
-            style=discord.ButtonStyle.danger,
-            row=1,
-        )
-
-        async def report_callback(interaction):
-            bot.check_guild(interaction)
-            bot.store.ensure_participant(sid, interaction.user.id)
-            if bot.store.session(sid)["revision"] != revision:
-                raise RuleError("This card is outdated. Use /nextclass.")
-            await interaction.response.send_modal(ReportModal(bot, sid))
-
-        report.callback = report_callback
-        self.add_item(report)
-        controls = discord.ui.Button(label='TA class controls', custom_id=f'mizan:controls:{sid}:{revision}', row=1)
-        async def controls_callback(interaction):
-            bot.require_ta(interaction)
-            ui.guarded(bot, sid, revision)
-            await ui.class_action(bot, interaction, 'manage', sid)
-        controls.callback = controls_callback
-        self.add_item(controls)
-
-    async def on_error(self, interaction, error, item):
-        await self.bot.respond_error(interaction, error)
+from .flow import Invitation as ClassView, Recap, SuggestionReminder
 
 
 class ReportModal(discord.ui.Modal, title="Report a class problem"):
@@ -163,6 +107,12 @@ class PollView(discord.ui.View):
 
         none.callback = none_callback
         self.add_item(none)
+        confirm_button=discord.ui.Button(label='TA · confirm new time',custom_id=f'mizan:poll-confirm:{pid}',style=discord.ButtonStyle.primary)
+        async def confirm_new_time(interaction):
+            bot.require_ta(interaction)
+            await ui.choose_poll(bot,interaction,pid=pid)
+        confirm_button.callback=confirm_new_time
+        self.add_item(confirm_button)
         self.bot = bot
 
     async def on_error(self, interaction, error, item):
@@ -228,10 +178,10 @@ class MizanBot(discord.Client):
         if channel:
             return await channel.send(text[:1950], view=view)
 
-    async def notify_once(self, key, text):
+    async def notify_once(self, key, text, view=None):
         if self.store.notice_sent(key):
             return
-        message = await self.notify(text)
+        message = await self.notify(text, view=view) if view is not None else await self.notify(text)
         if message:
             self.store.mark_notice(key)
 
@@ -243,6 +193,9 @@ class MizanBot(discord.Client):
             description=f"{when(s['start_at'])}\n📍 {safe(s['location'])}\n**{safe(s['topic'])}**",
             color=0x147D73,
         )
+        previous = self.store.latest_lesson(datetime.fromisoformat(s['start_at']))
+        if previous:
+            embed.add_field(name='Where we left off', value=safe(previous['recap'])[:1000], inline=False)
         embed.add_field(
             name="Preparation",
             value=safe(s["prep"])[:1000] or "Bring the vocabulary book, textbook, and exercise book.",
@@ -250,7 +203,7 @@ class MizanBot(discord.Client):
         )
         responses = {r["user_id"]: r["response"] for r in self.store.responses(sid)}
         embed.add_field(
-            name="RSVPs · not attendance",
+            name="Can you come?",
             value="\n".join(
                 f"{safe(m['name'])}: {ui.RSVP_LABELS.get(responses.get(m['user_id']), 'Not answered')}"
                 for m in self.store.participants(sid)
@@ -258,6 +211,9 @@ class MizanBot(discord.Client):
             or "No roster",
             inline=False,
         )
+        pending=self.store.rows("SELECT user_id FROM replacement_requests WHERE session_id=? AND revision=? AND state='pending'",(sid,s['revision']))
+        if pending:
+            embed.add_field(name='Replacement times needed',value=', '.join(f"<@{r['user_id']}>" for r in pending),inline=False)
         embed.add_field(name="RSVP deadline", value=when(s["rsvp_due"]))
         embed.add_field(
             name=f"Group commitment · {month}",
@@ -336,7 +292,8 @@ class MizanBot(discord.Client):
             except discord.NotFound:
                 pass
         if create:
-            msg = await channel.send(embed=self.poll_embed(pid), view=view)
+            people=' '.join(f"<@{m['user_id']}>" for m in self.store.participants(p['session_id']))
+            msg = await channel.send(content=f"📅 {people} A replacement time was suggested. Can you make it? Vote below.",embed=self.poll_embed(pid), view=view)
             with self.store.db:
                 self.store.db.execute("UPDATE polls SET message_id=? WHERE id=?", (msg.id, pid))
 
@@ -348,10 +305,14 @@ class MizanBot(discord.Client):
         ):
             self.add_view(ClassView(self, s["id"], s["revision"]), message_id=s["message_id"])
             self.add_view(ui.ConflictView(self, s["id"], s["revision"]))
+            self.add_view(SuggestionReminder(self, s["id"], s["revision"]))
+            self.add_view(Recap(self, s["id"], s["revision"]))
         for p in self.store.rows(
             "SELECT id,options,message_id FROM polls WHERE status='open' AND message_id IS NOT NULL"
         ):
             self.add_view(PollView(self, p["id"], len(json.loads(p["options"]))), message_id=p["message_id"])
+        for s in self.store.rows("SELECT * FROM sessions WHERE status='held'"):
+            self.add_view(Recap(self, s['id'], s['revision']))
         guild = os.environ.get("DISCORD_GUILD_ID")
         if not guild:
             raise RuntimeError(
@@ -403,6 +364,8 @@ class MizanBot(discord.Client):
     @scheduler.before_loop
     async def before_scheduler(self):
         await self.wait_until_ready()
+        for s in self.store.rows("SELECT * FROM sessions WHERE status='scheduled' AND message_id IS NOT NULL"):
+            await self.update_card(s['id'])
 
     async def tick(self):
         if not self.store.get("channel_id"):
@@ -450,11 +413,26 @@ class MizanBot(discord.Client):
                     f"reminder:{sid}:{rev}:{label}",
                     f"📚 {'Class starts within an hour' if label == 'soon' else 'Class within 24 hours'}: #{sid}, {when(s['start_at'])}\n📍 {safe(s['location'])} · {safe(s['topic'])}\nPreparation: {safe(s['prep']) or 'Bring all three books.'}",
                 )
-            if now >= end:
-                await self.notify_once(
-                    f"confirm:{sid}:{rev}",
-                    f"TA: did class #{sid} happen? Everyone who accepted is assumed present; report exceptions with /attendance, then /classheld. **No Beeminder credit until confirmed.** If it didn't happen, /cancel and /poll.",
-                )
+        # Ask the TA after each class, including held classes still missing a recap.
+        for s in self.store.rows("SELECT * FROM sessions WHERE status IN ('scheduled','held')"):
+            if now < datetime.fromisoformat(s['confirmation_due']):
+                continue
+            notes=self.store.one('SELECT 1 FROM lesson_notes WHERE session_id=? AND revision=?',(s['id'],s['revision']))
+            if notes: continue
+            end_local=datetime.fromisoformat(s['confirmation_due']).astimezone(ZoneInfo(self.store.tz))
+            if local.date()!=end_local.date() and local.hour<9: continue
+            guild=self.get_guild(int(os.environ.get('DISCORD_GUILD_ID') or self.store.get('guild_id',0)))
+            ta=getattr(self,'demo_owner',None) or self.store.get('ta_user_id') or (guild.owner_id if guild else None)
+            mention=f'<@{ta}> ' if ta else 'TA: '
+            await self.notify_once(
+                f"recap:{s['id']}:{s['revision']}:{local.date()}",
+                mention+f"did class #{s['id']} happen? **What did you cover, and what are we doing next?** Add a short recap below; it will carry into next week's announcement. Accepted RSVPs count as present; record exceptions first.",
+                view=Recap(self,s['id'],s['revision']))
+        for req in self.store.rows("SELECT r.* FROM replacement_requests r JOIN sessions s ON s.id=r.session_id AND s.revision=r.revision WHERE r.state='pending' AND s.status='scheduled'"):
+            if now < datetime.fromisoformat(req['updated_at'])+timedelta(hours=12): continue
+            await self.notify_once(f"suggestion:{req['session_id']}:{req['revision']}:{req['user_id']}:{local.date()}",
+                f"<@{req['user_id']}> you can't make class — please suggest a time you CAN attend.",
+                view=SuggestionReminder(self,req['session_id'],req['revision']))
         for p in self.store.rows("SELECT * FROM polls WHERE status='open'"):
             pid = p["id"]
             if now >= datetime.fromisoformat(p["deadline"]):
@@ -562,6 +540,7 @@ def register_commands(bot):
         if channel.guild.id != interaction.guild_id:
             raise RuleError("Choose a channel in this server.")
         store.set("guild_id", interaction.guild_id)
+        store.set("ta_user_id", interaction.user.id)
         if store.get('channel_id') != channel.id:
             store.set('panel_message_id', None)
         store.set("channel_id", channel.id)
@@ -625,23 +604,14 @@ def register_commands(bot):
     async def rsvp(
         interaction: discord.Interaction,
         class_id: int | None = None,
-        response: Literal["coming", "late", "unavailable", "change"] | None = None,
+        response: Literal["coming", "unavailable"] | None = None,
         note: str = "",
     ):
         bot.check_guild(interaction)
         if class_id is None or response is None:
             return await ui.route(bot, interaction, 'rsvp', class_id=class_id)
-        store.rsvp(class_id, interaction.user.id, response, note)
-        await interaction.response.defer(ephemeral=True)
-        await bot.update_card(class_id)
-        await interaction.followup.send(
-            "RSVP saved. A request does not move or cancel class.", ephemeral=True
-        )
-        if response in {"unavailable", "change"}:
-            await bot.notify(
-                f"<@{interaction.user.id}>: **{ui.RSVP_LABELS[response]}** for class #{class_id}. {safe(note)}\nTA: keep the original time or find alternatives.",
-                view=ui.ConflictView(bot, class_id, store.session(class_id)["revision"])
-            )
+        from .flow import respond
+        await respond(bot,interaction,class_id,interaction.user.id,response=='coming',store.session(class_id)['revision'])
 
     @tree.command(description="Report a missing person, last-minute conflict, or class that did not happen")
     async def report(interaction: discord.Interaction, class_id: int | None = None, reason: str | None = None):
@@ -900,7 +870,7 @@ def register_commands(bot):
         bot.require_ta(interaction)
         payload = {
             t: store.rows("SELECT * FROM " + t)
-            for t in ["members", "sessions", "rsvps", "attendance", "ledger", "polls", "votes", "audit"]
+            for t in ["members", "sessions", "rsvps", "attendance", "ledger", "polls", "votes", "audit", "replacement_requests", "lesson_notes"]
         }
         file = discord.File(
             io.BytesIO(json.dumps(payload, ensure_ascii=False, indent=2).encode()),

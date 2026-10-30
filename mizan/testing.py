@@ -101,7 +101,7 @@ class DemoBot(MizanBot):
         self.store.close()
 
 
-class TestControls(Menu):
+class AdvancedControls(Menu):
     def __init__(self,root,demo):
         super().__init__(demo)
         async def controls(i):
@@ -137,6 +137,54 @@ class TestControls(Menu):
         self.button('Reset test session',reset,style=discord.ButtonStyle.danger)
 
 
+class TestControls(Menu):
+    def __init__(self,root,demo):
+        super().__init__(demo)
+        async def midweek(i):
+            from .prayer import upcoming
+            from zoneinfo import ZoneInfo
+            demo.check_guild(i)
+            saturday=upcoming(demo.store,1)[0].astimezone(ZoneInfo('America/Chicago')).date()
+            demo.test_clock=datetime.combine(saturday-timedelta(days=3),datetime.min.time(),ZoneInfo('America/Chicago'))+timedelta(hours=18)
+            demo.store.set('weekly_invites',True)
+            await i.response.defer()
+            try: await demo.tick()
+            finally: demo.store.set('weekly_invites',False)
+            await send(i,'🧪 **Wednesday, 6 PM: RSVP check-in sent.**\nNow answer as each member. The class invitation has only I can come / I can’t.',TestControls(root,demo))
+        self.button('1 · Run midweek RSVP',midweek,style=discord.ButtonStyle.primary)
+        async def members(i): await simulated_rsvp(demo,i)
+        self.button('2 · Answer as members',members)
+        async def after(i):
+            demo.check_guild(i)
+            rows=demo.store.rows("SELECT * FROM sessions WHERE status='scheduled' ORDER BY start_at LIMIT 1")
+            if not rows: raise RuleError('Run the midweek RSVP first.')
+            demo.test_clock=datetime.fromisoformat(rows[0]['confirmation_due'])+timedelta(minutes=1)
+            await i.response.defer()
+            await demo.tick()
+            await send(i,'🧪 **Class has ended.** The bot has prompted the TA for a recap. Open that prompt, record any attendance exceptions, then say what you covered and what is next.',TestControls(root,demo))
+        self.button('3 · Jump after class',after)
+        async def next_week(i):
+            from zoneinfo import ZoneInfo
+            demo.check_guild(i)
+            done=demo.store.one("SELECT s.* FROM sessions s JOIN lesson_notes n ON n.session_id=s.id WHERE s.status='held' ORDER BY s.start_at DESC LIMIT 1")
+            if not done: raise RuleError('Add the after-class recap first, so next week has a lesson to carry forward.')
+            finished=datetime.fromisoformat(done['start_at']).astimezone(ZoneInfo('America/Chicago')).date()
+            day=finished+timedelta(days=((5-finished.weekday())%7 or 7))
+            demo.test_clock=datetime.combine(day-timedelta(days=3),datetime.min.time(),ZoneInfo('America/Chicago'))+timedelta(hours=18)
+            demo.store.set('weekly_invites',True)
+            await i.response.defer()
+            try: await demo.tick()
+            finally: demo.store.set('weekly_invites',False)
+            await send(i,'🧪 **Next Wednesday: new invitation sent.** Check its Where we left off, next lesson, and preparation fields.',TestControls(root,demo))
+        self.button('4 · Next week’s announcement',next_week)
+        async def tools(i): await send(i,'🧪 Optional test tools',AdvancedControls(root,demo))
+        self.button('Other test tools',tools)
+        async def reset(i):
+            await demo.close();root.test_sessions.pop(i.user.id,None)
+            await open_test(root,i)
+        self.button('Reset test session',reset,style=discord.ButtonStyle.danger)
+
+
 async def simulated_rsvp(demo, interaction, sid=None, uid=None, notice=''):
     demo.check_guild(interaction)
     sessions=demo.store.rows("SELECT * FROM sessions WHERE status='scheduled' ORDER BY start_at")
@@ -155,25 +203,17 @@ async def simulated_rsvp(demo, interaction, sid=None, uid=None, notice=''):
     view=Menu(demo)
     async def selected(i,v): await simulated_rsvp(demo,i,sid,int(v))
     view.select('Act as a member',[discord.SelectOption(label=p['name'][:100],value=str(p['user_id']),default=p['user_id']==uid) for p in people],selected)
-    for response,title in [('coming','Coming'),('late','Running late'),('unavailable',"Can't attend"),('change','Request another time')]:
-        async def answer(i,value=response):
-            demo.check_guild(i)
-            demo.store.rsvp(sid,uid,value,revision=revision)
-            await i.response.defer()
-            await demo.update_card(sid)
-            await simulated_rsvp(demo,i,sid,uid,f"Saved: **{safe(person['name'])} — {RSVP_LABELS[value]}**.")
-        view.button(title,answer,style=discord.ButtonStyle.success if response=='coming' else discord.ButtonStyle.secondary)
+    for coming,title in [(True,'I can come'),(False,"I can't")]:
+        async def answer(i,value=coming):
+            from .flow import respond
+            await respond(demo,i,sid,uid,value,revision)
+        view.button(title,answer,style=discord.ButtonStyle.success if coming else discord.ButtonStyle.secondary)
     conflicts=[p for p in people if responses.get(p['user_id']) in {'unavailable','change'}]
     text=f"🧪 **Rehearse RSVPs · {label(demo.store.session(sid)['start_at'])}**\nActing as **{safe(person['name'])}**. Pick a member and tap their response.\n\n"
     text+='\n'.join(f"{safe(p['name'])}: **{RSVP_LABELS.get(responses.get(p['user_id']),'Not answered')}**" for p in people)
     if notice: text+='\n\n'+notice
     if conflicts:
-        controls=ConflictView(demo,sid,revision)
-        for item in list(controls.children):
-            controls.remove_item(item)
-            item.row=2
-            view.add_item(item)
-        text+='\n\n**Scheduling conflict:** '+', '.join(safe(p['name']) for p in conflicts)+'.\nAs TA, keep the original time if the rest can meet, or find alternatives. Reporting alone assigns no penalty.'
+        text+='\n\n**Scheduling conflict:** '+', '.join(safe(p['name']) for p in conflicts)+'.\nAnyone who cannot attend must propose another time. Early −1; within 24 hours −2, with no stacked penalties.'
     async def home(i): await open_test(demo.root,i)
     view.button('Test home',home)
     await send(interaction,text,view)
@@ -234,4 +274,4 @@ async def open_test(root,interaction):
         demo=DemoBot(root,interaction.user.id,interaction.user.display_name)
         root.test_sessions[interaction.user.id]=demo
     demo.check_guild(interaction)
-    await send(interaction,'🧪 **Shaykh Standly · Test mode**\nOnly you see these test messages. Four simulated members are ready. Test records are separate and disappear on reset or deployment.\n\n1. Simulate a weekly invitation or open test controls and schedule one.\n2. Play the other members to try different RSVPs.\n3. Move the test clock, test rescheduling, attendance and Al-Mizan.\n\nSMS/calls are mocked and financial writes are disabled here. Return to the normal server panel for real class actions.',TestControls(root,demo))
+    await send(interaction,'🧪 **Rehearse a whole class week**\nFour simulated members; only you see this.\n\n**1.** Wednesday RSVP nudge.\n**2.** Answer I can come / I can’t for each person. Declines need a replacement time and deduct Al-Mizan.\n**3.** After class, fill in the recap prompt.\n**4.** Preview next week’s announcement with that recap and the next lesson.\n\nReal members, records, messages and charges are untouched. Test sessions reset on deployment.',TestControls(root,demo))

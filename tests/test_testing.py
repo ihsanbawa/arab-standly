@@ -22,7 +22,7 @@ def interaction(uid=100,ta=True):
 def root(tmp_path,monkeypatch):
     monkeypatch.delenv('DISCORD_GUILD_ID',raising=False)
     monkeypatch.setenv('BEEMINDER_ENABLED','false')
-    clock=lambda:parse_local('2026-11-02 12:00','America/Chicago')
+    clock=lambda:parse_local('2026-11-04 19:00','America/Chicago')
     store=Store(tmp_path/'real.sqlite',clock=clock)
     store.set('guild_id',123)
     yield store
@@ -88,7 +88,7 @@ def test_test_wuphf_reuses_consent_quiet_hours_and_cooldown_without_http(root):
         assert 'No text or call was sent' in result
         with pytest.raises(RuleError,match='hour'):
             await demo.wuphf.send(client,100,'sms','Test class')
-        demo.test_clock=parse_local('2026-11-03 06:00',demo.store.tz)
+        demo.test_clock=parse_local('2026-11-05 06:00',demo.store.tz)
         with pytest.raises(RuleError,match='Quiet hours'):
             await demo.wuphf.send(client,100,'sms','Test class')
         demo.wuphf.consent(100,True,True,True)
@@ -132,20 +132,21 @@ def test_compact_rsvp_updates_in_place_and_offers_rescheduling(root):
         compact.response.send_message.assert_not_called()
         view=compact.response.edit_message.call_args.kwargs['view']
         assert len([x for x in view.children if isinstance(x, __import__('discord').ui.Select)])==1
-        answer=next(b for b in view.children if getattr(b,'label',None)=='Request another time')
+        answer=next(b for b in view.children if getattr(b,'label',None)=="I can't")
         result=interaction()
         result.message=compact.message
         result.response.is_done=lambda:True
         result.edit_original_response=AsyncMock()
         await answer.callback(result)
         content=result.edit_original_response.call_args.kwargs['content']
-        assert 'Requested another time' in content
-        assert 'Scheduling conflict' in content
+        assert 'When can you come instead?' in content
+        assert '**-1**' in content
         controls=result.edit_original_response.call_args.kwargs['view']
-        assert {'Keep original time','Find alternative times'} <= {getattr(b,'label',None) for b in controls.children}
-        result.followup.send.assert_not_called()
+        assert any(getattr(b,'placeholder',None)=='When CAN you come?' for b in controls.children)
+        assert demo.store.one("SELECT state FROM replacement_requests WHERE user_id=2")['state']=='pending'
+        assert all('TEST ONLY' in call.args[0] for call in result.followup.send.call_args_list)
         assert demo.store.session(sid)['status']=='scheduled'
-        assert not demo.store.rows('SELECT * FROM ledger')
+        assert demo.store.rows('SELECT * FROM ledger')[0]['points']==-1
         assert not root.rows('SELECT * FROM sessions')
         await bot.close()
     asyncio.run(run())
