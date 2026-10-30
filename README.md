@@ -1,4 +1,4 @@
-# Arab Standly · ⚖️ Al-Mīzān
+# Shaykh Standly · ⚖️ Al-Mīzān
 
 A Discord bot for a four-person **in-person** Arabic class. Coordinates Saturday classes after Fajr congregation at **IACC, Plano**, collects commitments, reschedules with polls, keeps monthly scores, and offers opt-in WUPHF phone nudges.
 
@@ -34,7 +34,7 @@ cp .env.example .env
 
 ### Create the Discord application
 
-1. In the [Discord Developer Portal](https://discord.com/developers/applications), create **Al-Mizan** and open its Bot settings.
+1. In the [Discord Developer Portal](https://discord.com/developers/applications), create **Shaykh Standly** and open its Bot settings. The current application is [Shaykh Standly](https://discord.com/developers/applications/1565804169057796126/information).
 2. Set its token privately as `DISCORD_BOT_TOKEN`. Never put it in chat, GitHub, screenshots, or bot commands.
 3. Invite it to your class server using OAuth2 scopes `bot` and `applications.commands`.
 4. Give it View Channels, Send Messages, Embed Links, Read Message History, and Attach Files **only in the class channel**. Administrator and privileged member/message-content intents are unnecessary.

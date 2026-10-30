@@ -64,12 +64,12 @@ class Wuphf:
         data = {"To": phone, "From": os.environ["TWILIO_PHONE_NUMBER"]}
         if mode == "sms":
             endpoint = "Messages"
-            data["Body"] = "Al-Mizan: " + message[:300] + " Reply STOP to stop SMS."
+            data["Body"] = "Shaykh Standly: " + message[:300] + " Reply STOP to stop SMS."
         else:
             endpoint = "Calls"
             data["Twiml"] = (
                 "<Response><Say>"
-                + escape("Al Mizan Arabic class reminder. " + message[:300])
+                + escape("Shaykh Standly Arabic class reminder. " + message[:300])
                 + "</Say></Response>"
             )
         try:

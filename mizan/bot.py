@@ -227,7 +227,7 @@ class MizanBot(discord.Client):
         s = self.store.session(sid)
         month = month_of(datetime.fromisoformat(s["start_at"]), self.store.tz)
         embed = discord.Embed(
-            title=f"📚 Arabic class #{sid} · {s['status'].replace('_', ' ').title()}",
+            title=f"📚 Shaykh Standly · Class #{sid} · {s['status'].replace('_', ' ').title()}",
             description=f"{when(s['start_at'])}\n📍 {safe(s['location'])}\n**{safe(s['topic'])}**",
             color=0x147D73,
         )
@@ -840,7 +840,7 @@ def register_commands(bot):
         )
         await interaction.response.send_message("Private class record export.", file=file, ephemeral=True)
 
-    @tree.command(description="Show Al-Mizan's main commands")
+    @tree.command(description="Show Shaykh Standly's main commands")
     async def help(interaction: discord.Interaction):
         bot.check_guild(interaction)
         await interaction.response.send_message(
