@@ -12,7 +12,7 @@ from mizan.testing import DemoBot,open_test
 
 def interaction(uid=100,ta=True):
     msg=SimpleNamespace(id=88,edit=AsyncMock())
-    return SimpleNamespace(guild_id=123,user=SimpleNamespace(id=uid,display_name='TA',roles=[]),
+    return SimpleNamespace(guild_id=123,channel_id=777,user=SimpleNamespace(id=uid,display_name='TA',roles=[]),
         permissions=SimpleNamespace(manage_guild=ta),
         response=SimpleNamespace(send_message=AsyncMock(),send_modal=AsyncMock(),defer=AsyncMock(),is_done=lambda:False),
         followup=SimpleNamespace(send=AsyncMock(return_value=msg)))
@@ -25,6 +25,7 @@ def root(tmp_path,monkeypatch):
     clock=lambda:parse_local('2026-11-04 19:00','America/Chicago')
     store=Store(tmp_path/'real.sqlite',clock=clock)
     store.set('guild_id',123)
+    store.set('debug_channel_id',777)
     yield store
     store.close()
 

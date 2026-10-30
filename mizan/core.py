@@ -110,6 +110,9 @@ CREATE TABLE IF NOT EXISTS replacement_requests(
  session_id INTEGER NOT NULL,revision INTEGER NOT NULL,user_id INTEGER NOT NULL,
  proposed_at TEXT,state TEXT NOT NULL DEFAULT 'pending',updated_at TEXT NOT NULL,
  PRIMARY KEY(session_id,revision,user_id));
+CREATE TABLE IF NOT EXISTS auto_moves(
+ poll_id INTEGER PRIMARY KEY,session_id INTEGER NOT NULL,revision INTEGER NOT NULL,
+ old_start TEXT NOT NULL,new_start TEXT NOT NULL,announced INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS lesson_notes(
  session_id INTEGER PRIMARY KEY,revision INTEGER NOT NULL,recap TEXT NOT NULL,
  next_lesson TEXT NOT NULL,prep TEXT NOT NULL,actor INTEGER NOT NULL,updated_at TEXT NOT NULL);
@@ -134,8 +137,21 @@ class Store:
 
     @contextmanager
     def transaction(self):
-        with self.db:
+        nested=self.db.in_transaction
+        self._savepoint=getattr(self,'_savepoint',0)+1
+        name=f'mizan_{self._savepoint}'
+        self.db.execute(f'SAVEPOINT {name}' if nested else 'BEGIN')
+        try:
             yield
+        except BaseException:
+            if nested:
+                self.db.execute(f'ROLLBACK TO {name}')
+                self.db.execute(f'RELEASE {name}')
+            else: self.db.rollback()
+            raise
+        else:
+            if nested: self.db.execute(f'RELEASE {name}')
+            else: self.db.commit()
 
     def rows(self, sql, args=()):
         return [dict(r) for r in self.db.execute(sql, args).fetchall()]
@@ -288,17 +304,21 @@ class Store:
         s=self.session(sid)
         self.ensure_participant(sid,uid)
         self.ensure_unsealed(s)
-        if s['revision']!=revision or s['status']!='scheduled':
+        if s['revision']!=revision or s['status'] not in {'scheduled','needs_replacement'}:
             raise RuleError('This class changed. Open its current invitation.')
         response=self.one('SELECT response FROM rsvps WHERE session_id=? AND revision=? AND user_id=?',(sid,revision,uid))
-        if not response or response['response'] not in {'unavailable','change'}:
+        rescheduling=self.one("SELECT 1 FROM polls WHERE session_id=? AND revision=? AND status IN ('open','no_agreement')",(sid,revision))
+        if (not response or response['response'] not in {'unavailable','change'}) and not rescheduling and s['status']!='needs_replacement':
             raise RuleError("Choose I can't before suggesting a replacement.")
         if proposed<=self.clock()+timedelta(minutes=5) or stamp(proposed)==s['start_at']:
             raise RuleError('Choose a different time at least five minutes in the future.')
+        finish=(proposed+timedelta(minutes=s['duration'])).astimezone(ZoneInfo(self.tz))
+        if finish.day==calendar.monthrange(finish.year,finish.month)[1] and finish.hour==23:
+            raise RuleError('Month-end replacements must finish before 23:00.')
         p=self.one("SELECT id FROM polls WHERE session_id=? AND revision=? AND status='open' AND deadline>? ORDER BY id DESC LIMIT 1",(sid,revision,stamp(self.clock())))
         options=self.poll(p['id'])['options'] if p else []
         if stamp(proposed) not in options:
-            if len(options)>=5: raise RuleError('The poll already has five times. Pick one of those or ask the TA to restart it.')
+            if len(options)>=5: raise RuleError('This round has five alternatives. Mark the ones that work or choose None work to start another round.')
             options.append(stamp(proposed))
         due=min(self.clock()+timedelta(hours=24),min(datetime.fromisoformat(x) for x in options)-timedelta(minutes=1))
         with self.transaction():
@@ -334,6 +354,11 @@ class Store:
         if s["status"] not in ("scheduled", "needs_replacement"):
             raise RuleError("Only scheduled or unresolved classes can be moved.")
         self.ensure_unsealed(s)
+        options=[stamp(datetime.fromisoformat(x)) for x in options]
+        for option in options:
+            finish=(datetime.fromisoformat(option)+timedelta(minutes=s['duration'])).astimezone(ZoneInfo(self.tz))
+            if finish.day==calendar.monthrange(finish.year,finish.month)[1] and finish.hour==23:
+                raise RuleError('Month-end replacements must finish before 23:00.')
         if not 1 <= len(options) <= 5 or len(set(options)) != len(options):
             raise RuleError("Supply 1–5 different proposed times.")
         if not self.clock() < deadline < min(datetime.fromisoformat(x) for x in options):
@@ -422,6 +447,9 @@ class Store:
         if not 0 <= slot < len(p["options"]):
             raise RuleError("Unknown option.")
         self.ensure_unsealed(s)
+        from .consensus import winner
+        if winner(self,pid)!=slot:
+            raise RuleError('A move requires all four votes. The earliest unanimously available option is selected automatically; no override is allowed.')
         start = datetime.fromisoformat(p["options"][slot])
         if start <= self.clock():
             raise RuleError("Choose a future time.")
@@ -596,10 +624,8 @@ class Store:
             self.log(actor, "penalty_waived", {"session": sid, "user": uid, "reason": reason})
 
     def monthly_count(self, month):
-        a, b = month_bounds(month, self.tz)
-        return self.one(
-            "SELECT COUNT(*) n FROM sessions WHERE status='held' AND start_at>=? AND start_at<?", (a, b)
-        )["n"]
+        from .progress import monthly_count
+        return monthly_count(self,month)
 
     def standings(self, month):
         month_bounds(month, self.tz)

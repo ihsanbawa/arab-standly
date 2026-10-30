@@ -81,7 +81,7 @@ def test_absence_correction_and_waiver(world):
     assert next(r["points"] for r in s.standings("2026-10") if r["user_id"] == 4) == -2
     s.set_attendance(sid, 4, "excused", 1, "Emergency")
     assert next(r["points"] for r in s.standings("2026-10") if r["user_id"] == 4) == 0
-    assert s.monthly_count("2026-10") == 1  # Group financial credit independent of individual attendance.
+    assert s.monthly_count("2026-10") == 0  # All four must be present for monthly credit.
 
 
 def test_poll_does_not_cancel_and_can_select_multiple(world):
@@ -117,6 +117,7 @@ def test_move_preserves_commitment_even_after_withdrawal(world):
     pid = s.open_poll(
         sid, [stamp(c[0] + timedelta(days=12)), stamp(c[0] + timedelta(days=13))], c[0] + timedelta(days=2), 1
     )
+    for uid in range(1,5): s.vote(pid,uid,0)
     s.confirm_slot(pid, 0, 1, responsible=1)
     assert s.responses(sid) == []
     assert s.session(sid)["revision"] == 1
@@ -136,6 +137,7 @@ def test_late_withdrawal_is_minus_two(world):
     pid = s.open_poll(
         sid, [stamp(c[0] + timedelta(days=2)), stamp(c[0] + timedelta(days=3))], c[0] + timedelta(hours=4), 1
     )
+    for uid in range(1,5): s.vote(pid,uid,0)
     s.confirm_slot(pid, 0, 1, responsible=2)
     assert next(r["points"] for r in s.standings("2026-10") if r["user_id"] == 2) == -2
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import asyncio
 import json
 import logging
 import os
@@ -19,7 +20,7 @@ from .beeminder import Beeminder
 from .content import NUDGE, RESOURCES, roast
 from .core import RuleError, Store, month_of, parse_local, stamp
 from .wuphf import Wuphf
-from . import ui
+from . import ui, consensus, progress
 from .prayer import SOURCE, TIMETABLE, ensure_weekly
 
 log = logging.getLogger("mizan")
@@ -74,10 +75,11 @@ class PollView(discord.ui.View):
             )
 
             async def callback(interaction, slot=index):
+                ui.guard_context(bot,interaction)
                 bot.check_guild(interaction)
                 await interaction.response.defer(ephemeral=True)
                 selected = bot.store.vote(pid, interaction.user.id, slot)
-                await bot.update_poll(pid)
+                await consensus.update(bot,pid)
                 await interaction.followup.send(
                     "Available ✓" if selected else "Availability removed", ephemeral=True
                 )
@@ -89,6 +91,7 @@ class PollView(discord.ui.View):
         )
 
         async def none_callback(interaction):
+            ui.guard_context(bot,interaction)
             bot.check_guild(interaction)
             p = bot.store.poll(pid)
             bot.store.ensure_participant(p["session_id"], interaction.user.id)
@@ -100,19 +103,21 @@ class PollView(discord.ui.View):
                 )
                 bot.store.db.execute("INSERT INTO votes VALUES(?,?,-1)", (pid, interaction.user.id))
             await interaction.response.defer(ephemeral=True)
-            await bot.update_poll(pid)
+            await consensus.update(bot,pid)
             await interaction.followup.send(
-                "Recorded: none work. The TA will see your conflict.", ephemeral=True
+                "Recorded: none work. Suggest a new alternative if the group needs another round.", ephemeral=True
             )
 
         none.callback = none_callback
         self.add_item(none)
-        confirm_button=discord.ui.Button(label='TA · confirm new time',custom_id=f'mizan:poll-confirm:{pid}',style=discord.ButtonStyle.primary)
-        async def confirm_new_time(interaction):
-            bot.require_ta(interaction)
-            await ui.choose_poll(bot,interaction,pid=pid)
-        confirm_button.callback=confirm_new_time
-        self.add_item(confirm_button)
+        offer=discord.ui.Button(label='Suggest another time',custom_id=f'mizan:poll-suggest:{pid}')
+        async def suggest_time(interaction):
+            from .flow import suggest_menu
+            bot.check_guild(interaction)
+            p=bot.store.poll(pid)
+            await suggest_menu(bot,interaction,p['session_id'],interaction.user.id,p['revision'])
+        offer.callback=suggest_time
+        self.add_item(offer)
         self.bot = bot
 
     async def on_error(self, interaction, error, item):
@@ -136,7 +141,11 @@ class MizanBot(discord.Client):
         self.tick_errors = 0
         self.runner = None
         self.test_sessions = {}
+        self.move_lock = asyncio.Lock()
         register_commands(self)
+        if not hasattr(self,'demo_owner'):
+            from .debug import route_commands
+            route_commands(self)
 
     def check_guild(self, interaction):
         expected = int(os.environ.get("DISCORD_GUILD_ID") or self.store.get("guild_id", 0))
@@ -203,9 +212,9 @@ class MizanBot(discord.Client):
         )
         responses = {r["user_id"]: r["response"] for r in self.store.responses(sid)}
         embed.add_field(
-            name="Can you come?",
+            name="Attendance" if s["status"]=="held" else "Can you come?",
             value="\n".join(
-                f"{safe(m['name'])}: {ui.RSVP_LABELS.get(responses.get(m['user_id']), 'Not answered')}"
+                f"{progress.member_line(self.store,sid,m)} · {safe(m['name'])} · 🔥 {progress.personal(self.store,m['user_id'])['current']}"
                 for m in self.store.participants(sid)
             )[:1000]
             or "No roster",
@@ -219,6 +228,11 @@ class MizanBot(discord.Client):
             name=f"Group commitment · {month}",
             value=f"**{self.store.monthly_count(month)}/2** classes held\nBeeminder: {'configured; month-end audit' if self.bee.configured() else 'not activated'}",
         )
+        agreed=progress.locked(self.store,sid)
+        embed.add_field(name='Group agreement',value='✅ 4/4 agreed · time locked' if agreed else '✅ All four attended' if progress.complete(self.store,sid) else '⚠️ All four must attend · no monthly credit yet' if s['status']=='held' else '⏳ Waiting for all four',inline=False)
+        embed.add_field(name='Monthly target',value=progress.summary(self.store,month),inline=False)
+        streak=progress.group_streak(self.store)
+        embed.add_field(name='🔥 Group monthly streak',value=f"{streak['current']} months · best {streak['best']}")
         embed.add_field(
             name="Practice links",
             value="\n".join(f"[{name}]({url})" for name, url in RESOURCES[:2]),
@@ -229,7 +243,7 @@ class MizanBot(discord.Client):
         if iq:
             embed.add_field(name='Fajr at IACC', value=f"[Official timetable]({SOURCE}): iqamah {iq} AM. Class starts at the time above, after prayer.", inline=False)
         embed.set_footer(
-            text=f"In person · {s['duration']} minutes · Revision {s['revision']} · Original time stands until TA confirms a move"
+            text=f"In person · {s['duration']} minutes · Revision {s['revision']} · Time moves automatically when all four agree"
         )
         return embed
 
@@ -257,7 +271,7 @@ class MizanBot(discord.Client):
         votes = self.store.rows("SELECT * FROM votes WHERE poll_id=?", (pid,))
         embed = discord.Embed(
             title=f"📅 Replacement poll #{pid} · Class #{p['session_id']}",
-            description=f"Select **every** time you can attend. Buttons toggle availability.\nCloses {when(p['deadline'])}\nOriginal time remains unless TA explicitly cancels/moves it.",
+            description=f"Select **every** time you can attend. Buttons toggle availability.\nCloses {when(p['deadline'])}\nAll four must agree. The earliest unanimous time locks automatically.",
             color=0xE0A526,
         )
         for index, option in enumerate(p["options"]):
@@ -270,7 +284,7 @@ class MizanBot(discord.Client):
         none = [v["user_id"] for v in votes if v["slot"] == -1]
         if none:
             embed.add_field(name="None work", value=", ".join(f"<@{u}>" for u in none), inline=False)
-        embed.set_footer(text=f"{p['status']} · TA confirms with /confirm_slot; votes are not new RSVPs")
+        embed.set_footer(text=f"{p['status']} · All-four votes become RSVPs for the selected time")
         return embed
 
     async def update_poll(self, pid, create=False):
@@ -281,7 +295,7 @@ class MizanBot(discord.Client):
         view = (
             PollView(self, pid, len(p["options"]))
             if p["status"] == "open" and self.store.clock() < datetime.fromisoformat(p["deadline"])
-            else None
+            else SuggestionReminder(self,p['session_id'],p['revision']) if p['status']=='no_agreement' else None
         )
         if p["message_id"]:
             try:
@@ -300,6 +314,8 @@ class MizanBot(discord.Client):
     async def setup_hook(self):
         self.http_client = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20))
         self.add_view(ui.Panel(self))
+        from .debug import DebugPanel
+        self.add_view(DebugPanel(self))
         for s in self.store.rows(
             "SELECT * FROM sessions WHERE status='scheduled' AND message_id IS NOT NULL"
         ):
@@ -364,6 +380,14 @@ class MizanBot(discord.Client):
     @scheduler.before_loop
     async def before_scheduler(self):
         await self.wait_until_ready()
+        from .debug import ensure
+        await ensure(self)
+        channel=await self.channel()
+        panel=self.store.get('panel_message_id')
+        if channel and panel:
+            try:
+                await (await channel.fetch_message(panel)).edit(content='🦆 **Shaykh Standly · Arabic Class**\nRSVPs, class progress and lessons. Private rehearsals live in #shaykh-debug.',view=ui.Panel(self))
+            except discord.NotFound: self.store.set('panel_message_id',None)
         for s in self.store.rows("SELECT * FROM sessions WHERE status='scheduled' AND message_id IS NOT NULL"):
             await self.update_card(s['id'])
 
@@ -371,6 +395,10 @@ class MizanBot(discord.Client):
         if not self.store.get("channel_id"):
             return
         await ui.ensure_panel(self)
+        await consensus.flush(self)
+        for poll in self.store.rows("SELECT id FROM polls WHERE status='open'"):
+            if consensus.winner(self.store,poll['id']) is not None:
+                await consensus.update(self,poll['id'])
         try:
             weekly_sid = ensure_weekly(self.store)
             if weekly_sid:
@@ -404,7 +432,7 @@ class MizanBot(discord.Client):
                 if conflicts:
                     await self.notify_once(
                         f"conflict:{sid}:{rev}",
-                        f"⚠️ Class #{sid} has {len(conflicts)} scheduling conflict(s). TA: keep the time or open /poll. No automatic cancellation.",
+                        f"⚠️ Class #{sid} has {len(conflicts)} scheduling conflict(s). Everyone must agree on a replacement; suggest and vote in the rescheduling poll.",
                     )
             remaining = (start - now).total_seconds()
             if 0 < remaining <= 86400:
@@ -436,11 +464,7 @@ class MizanBot(discord.Client):
         for p in self.store.rows("SELECT * FROM polls WHERE status='open'"):
             pid = p["id"]
             if now >= datetime.fromisoformat(p["deadline"]):
-                await self.update_poll(pid)
-                await self.notify_once(
-                    f"pollclosed:{pid}",
-                    f"Poll #{pid} has closed. TA: review availability and /confirm_slot, or open another /poll. No automatic move.",
-                )
+                await consensus.update(self,pid)
             elif now >= datetime.fromisoformat(p["deadline"]) - timedelta(hours=4):
                 responded = {
                     v["user_id"]
@@ -457,28 +481,18 @@ class MizanBot(discord.Client):
                         " ".join(missing)
                         + f" please answer replacement poll #{pid}. Select all workable slots or None work.",
                     )
-        count = self.store.monthly_count(month)
-        remaining = self.store.rows(
-            "SELECT id FROM sessions WHERE status='scheduled' AND start_at>? AND start_at<?",
-            (
-                stamp(now),
-                stamp(
-                    (local.replace(day=28) + timedelta(days=4)).replace(
-                        day=1, hour=0, minute=0, second=0, microsecond=0
-                    )
-                ),
-            ),
-        )
-        if count < 2 and len(remaining) < 2 - count and local.day >= 15 and len(self.store.roster()) == 4:
-            await self.notify_once(
-                f"risk:{month}:{local.day}",
-                f"⚠️ Save this month: **{count}/2** classes held; only {len(remaining)} future sessions are scheduled. TA: /schedule a class or /poll a makeup. Group target: two held classes. Beeminder charges apply only after the separate commitment setup is activated.",
-            )
-        for s in self.store.rows("SELECT id FROM sessions WHERE status='needs_replacement'"):
-            await self.notify_once(
-                f"replacement:{s['id']}:{local.strftime('%Y-%m-%d')}",
-                f"Class #{s['id']} still needs a replacement. TA: /poll with two or more alternatives.",
-            )
+        if len(self.store.roster())==4:
+            d=progress.danger(self.store)
+            last=self.store.get(f'danger:last:{month}',{})
+            if last.get('date')!=str(local.date()) or d['level']>last.get('level',-1):
+                text=progress.summary(self.store)+'\n'+('\n'.join('• '+safe(x) for x in d['actions']) or 'Keep the streak going!')
+                message=await self.notify(text)
+                if message: self.store.set(f'danger:last:{month}',{'date':str(local.date()),'level':d['level']})
+            signature=(d['level'],d['held'],d['confirmed'])
+            if getattr(self,'progress_signature',None)!=signature:
+                for c in self.store.rows("SELECT id FROM sessions WHERE status='scheduled' AND message_id IS NOT NULL"):
+                    await self.update_card(c['id'])
+                self.progress_signature=signature
         if len(self.store.roster()) != 4:
             await self.notify_once(
                 'roster-needed',
@@ -653,39 +667,9 @@ def register_commands(bot):
         if poll_id is None or option is None:
             return await ui.route(bot, interaction, 'confirm_slot', poll_id=poll_id)
         p = store.poll(poll_id)
-        available = {
-            r["user_id"]
-            for r in store.rows("SELECT user_id FROM votes WHERE poll_id=? AND slot=?", (poll_id, option - 1))
-        }
-        conflicts = [m for m in store.participants(p["session_id"]) if m["user_id"] not in available]
-        if conflicts and not accept_conflicts:
-            raise RuleError(
-                "Not everyone marked this option available. Check the conflicts, then explicitly use accept_conflicts:true if proceeding."
-            )
-        old = store.session(p["session_id"])["start_at"]
-        sid = store.confirm_slot(
-            poll_id, option - 1, interaction.user.id, responsible.id if responsible else None, excused
-        )
         await interaction.response.defer(ephemeral=True)
-        await bot.update_card(sid, create=True)
-        await bot.update_poll(poll_id)
-        s = store.session(sid)
-        await bot.notify(
-            f"📅 **Class #{sid} moved**\nOld: {when(old)}\nNew: {when(s['start_at'])}\n📍 {safe(s['location'])}\nEveryone: RSVP again. Previous responses do not carry over."
-        )
-        if responsible and not excused:
-            penalty = store.one(
-                "SELECT points FROM penalties WHERE session_id=? AND user_id=?", (sid, responsible.id)
-            )
-            if penalty:
-                await bot.notify_once(
-                    f"move-roast:{sid}:{s['revision']}:{responsible.id}",
-                    f"<@{responsible.id}> **{penalty['points']} · Changed an accepted commitment**\n"
-                    + roast(0),
-                )
-        await interaction.followup.send(
-            "Replacement confirmed; reminders now use the new time.", ephemeral=True
-        )
+        await consensus.update(bot,poll_id)
+        await interaction.followup.send('Times lock automatically when all four vote for the same option. There is no TA override.',ephemeral=True)
 
     @tree.command(description="Mark class as not held and needing replacement; no automatic group blame")
     async def cancel(
@@ -726,8 +710,9 @@ def register_commands(bot):
             return await ui.route(bot, interaction, 'attendance', class_id=class_id)
         store.set_attendance(class_id, person.id, status, interaction.user.id, reason)
         await interaction.response.send_message(
-            f"Recorded {safe(person.display_name)}: {status}.", ephemeral=True
+            f"Recorded {safe(person.display_name)}: {status}. Only all-four attendance counts toward 2/month.", ephemeral=True
         )
+        await bot.update_card(class_id)
         if status == "absent":
             await bot.notify_once(
                 f"roast:{class_id}:{person.id}",
@@ -870,7 +855,7 @@ def register_commands(bot):
         bot.require_ta(interaction)
         payload = {
             t: store.rows("SELECT * FROM " + t)
-            for t in ["members", "sessions", "rsvps", "attendance", "ledger", "polls", "votes", "audit", "replacement_requests", "lesson_notes"]
+            for t in ["members", "sessions", "rsvps", "attendance", "ledger", "polls", "votes", "audit", "replacement_requests", "lesson_notes", "auto_moves"]
         }
         file = discord.File(
             io.BytesIO(json.dumps(payload, ensure_ascii=False, indent=2).encode()),
@@ -879,6 +864,7 @@ def register_commands(bot):
         await interaction.response.send_message("Private class record export.", file=file, ephemeral=True)
 
     @tree.command(description="TA: test with four simulated members, isolated records and mock providers")
+    @app_commands.default_permissions(manage_guild=True)
     async def testmode(interaction: discord.Interaction):
         from .testing import open_test
         await open_test(bot, interaction)

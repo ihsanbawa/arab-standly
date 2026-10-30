@@ -11,11 +11,13 @@ A Discord bot for a four-person **in-person** Arabic class. Coordinates Saturday
 - Class announcement cards with physical location, topic, preparation, RSVP deadline, and Quizlet links.
 - Persistent RSVP and multi-select replacement-poll buttons; they work after restarts.
 - RSVP nudges, conflict notifications, day-before and one-hour reminders.
-- TA-confirmed rescheduling: polls never silently cancel the original class. New time requires new RSVPs.
+- Unanimous rescheduling: the earliest time explicitly approved by all four locks automatically. Votes for that time become new RSVPs; other old responses never carry over.
 - Trust-based attendance: no routine roll call if everyone accepted. TA confirms class actually happened after its scheduled end; accepted participants count as present unless exceptions were recorded.
 - Disruption reports from participants. Reporter is never automatically blamed or deducted.
 - Al-Mīzān: attend +1; cannot attend −1, or −2 within 24 hours; causing a move after accepting −1; last-minute move/unexcused absence −2. One strongest disruption penalty per person per class, not stacked penalties. Excuses/waivers and corrections supported.
-- Monthly standings start at zero without deleting previous months.
+- Monthly standings start at zero without deleting previous months. Personal attendance streaks and group monthly-success streaks continue across month boundaries.
+- 🟢/🟡/🔴/🚨 monthly danger status on class cards, with one daily action summary and same-day escalation. Only fully attended four-person classes count toward 2/month.
+- Private #shaykh-debug testing channel. Commands there use an isolated test session automatically.
 - Curated Arabic roasts with translation reveals and vocabulary notes.
 - Shared minimum of two classes per calendar month, at-risk alerts, unresolved-makeup reminders.
 - Private record export, restricted TA commands, audit trail, persistent SQLite storage.
@@ -52,25 +54,37 @@ cp .env.example .env
 2. Every **Wednesday at 6 PM America/Chicago**, the bot announces Saturday’s class at IACC after Fajr. If setup happens later in the week it catches up. It uses verified IACC iqamah + an adjustable 15 minutes, for a 60-minute class.
 3. The class card has exactly **I can come / I can’t**. No separate late/change/report controls on that invitation. TA actions remain on the main panel and post-class prompt.
 4. **I can’t** records −1 (−2 within 24 hours), immediately opens a replacement-time picker, and posts a curated Arabic roast. Pick a suggested date or enter a custom Dallas date/time. The bot automatically posts an availability poll and marks the proposer available. Subsequent suggestions extend the same open poll without erasing existing votes, up to five alternatives. Closing the picker leaves a visible pending suggestion; the bot nudges them after 12 hours. No one can propose on behalf of another member outside Test mode.
-5. Others vote; a TA confirms any move using **TA · confirm new time** on the poll. No automatic cancellation or relocation. A new time requires fresh RSVPs. Only the strongest deduction counts per person/class; repeated clicks cannot stack deductions. Marking an emergency excused removes the decline/absence penalty; a separate confirmed-move penalty requires a waiver.
+5. Everyone marks all times they can attend. As soon as an option has all four votes, the bot chooses the earliest unanimously available time, updates the class and reminders, and records those four votes as RSVPs. No TA approval or override exists. An unanswered member is never counted as agreement. If everyone answers without a common time, or the poll expires, the bot closes the round and asks all four for new suggestions; previous votes are not carried to a new round. The original class remains until agreement. Decisions and pending announcements survive a restart. Only the strongest deduction counts per person/class; repeated clicks cannot stack deductions. Marking an emergency excused removes the decline/absence penalty; a separate confirmed-move penalty requires a waiver.
 6. After class ends, the bot nudges the TA: **Did class happen? What did we cover, and what comes next?** Tap **Class happened · add recap** and fill in completed work, next lesson and optional prep. Accepted RSVPs count as present; use **Attendance exception** for anyone else. An unresolved attendance record saves the recap as a draft and offers controls to finish it.
-7. Confirming the recap records the held class and attendance points once. The next Wednesday’s card includes **Where we left off**, the next lesson, preparation, and practice links. If next week was manually announced early, saving the recap refreshes its lesson details too. Older recaps cannot override a newer lesson handoff.
+7. Confirming the recap records the held class and individual attendance points once. A partial-group meeting is recorded but contributes zero toward the group’s two-class target. The next Wednesday’s card includes **Where we left off**, the next lesson, preparation, and practice links. If next week was manually announced early, saving the recap refreshes its lesson details too. Older recaps cannot override a newer lesson handoff.
 8. A class with no recap prompts the TA again on following days after 9 AM. A class that did not happen uses **Class didn’t happen** and a replacement poll, without earning held-class credit.
 
 Financially audited months retain their existing protections. Individual scores and the group’s two-held-classes monthly commitment remain separate. Beeminder and WUPHF still require their private configuration and participant opt-ins.
 
 ### Rehearse the whole week alone
 
-Open **Test mode** or `/testmode`. The primary controls are now four numbered steps:
+Open **#shaykh-debug → Start weekly rehearsal**, or `/testmode` inside that private channel. The primary controls are five numbered steps:
 
 1. **Run midweek RSVP** moves the test clock to Wednesday at 6 PM and runs the actual automatic check-in.
 2. **Answer as members** lets you play all four people with the same two responses. Test declines deduct test points and require a replacement time; a private test poll opens automatically.
-3. **Jump after class** runs the actual post-class prompt. Record any attendance exceptions, then fill in the recap and next lesson.
-4. **Next week’s announcement** runs the next Wednesday and shows the carried lesson details.
+3. **Vote as all four** lets you answer availability for each simulated member. The fourth agreeing vote automatically schedules the class; None work can lead to another suggestion round.
+4. **Jump after class** runs the actual post-class prompt. Record any attendance exceptions, then fill in the recap and next lesson.
+5. **Next week’s announcement** runs the next Wednesday and shows the carried lesson details, streaks and monthly danger status.
 
-**Other test tools** retains clock jumps, poll-voter simulation, private nudge settings and the mock group-commitment preview. **Reset test session** starts over.
+**Streaks & danger tests** opens optional tools for clock jumps, poll-voter simulation, private nudge settings and the mock group-commitment preview. Its streak example resets the private test session and creates two successful sample months; its month-end button runs the real danger checks. **Reset test session** starts over.
 
 Each TA gets separate in-memory records. Test messages are private, marked TEST ONLY, and suppress mentions. Live members, records, SMS/calls and Beeminder writes are untouched. WUPHF delivery is mocked while keeping the consent, quiet-hour and frequency checks. Test records disappear on reset or deployment. Test errors stay inside test controls rather than directing the user to live `/status`.
+
+### Streaks, danger and attendance display
+
+Every class card uses ✅ coming/present, ❌ unavailable/absent, ⏳ unanswered, 📅 replacement suggested, 🤍 excused and 🟠 partial. A separate 4/4 agreement field shows whether the time is locked. RSVPs are intention; recorded attendance replaces them on completed class cards.
+
+- Personal streak: consecutive attended classes, with current and best values. An unexcused absence resets it, including a no-show whose class is subsequently moved to a makeup. Excused or partial attendance pauses without incrementing. Correcting attendance recomputes the streak.
+- Group monthly streak: consecutive completed months with two classes at which all four were present. A current month that has already met the target can join the streak; an unfinished current month does not prematurely break the previous streak. A failed month breaks it once that month ends. Al-Mizan’s monthly score reset does not erase streaks.
+- 🟢 target met: 2 full-group classes completed. 🟡 on track: enough future classes explicitly agreed by all four, still awaiting attendance. 🔴 at risk: insufficient agreed future classes. 🚨 urgent: final seven calendar days and fewer than two full-group classes completed. Overlapping sessions cannot make the target look safe.
+- One daily summary lists the missing RSVPs, replacement agreement or additional class needed. A worsening severity can alert again that day. The bot does not claim Beeminder charges are active when the integration is off.
+
+The private **#shaykh-debug** channel must deny View Channel to @everyone and allow the owner and bot. The bot discovers it by name on startup and posts a separate test panel. Test mode refuses to start in the member channel; ordinary commands used in the debug channel route to an isolated test bot/store. The live class panel contains no test button. Existing private ephemeral test messages from earlier versions were visible only to their creator.
 
 ### Prayer-relative schedule
 

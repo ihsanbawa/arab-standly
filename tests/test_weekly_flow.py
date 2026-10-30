@@ -14,7 +14,7 @@ from mizan.flow import Recap
 
 def interaction(uid=100):
     msg=SimpleNamespace(id=88,edit=AsyncMock())
-    i=SimpleNamespace(guild_id=123,user=SimpleNamespace(id=uid,display_name='TA',roles=[]),permissions=SimpleNamespace(manage_guild=True),
+    i=SimpleNamespace(guild_id=123,channel_id=777,user=SimpleNamespace(id=uid,display_name='TA',roles=[]),permissions=SimpleNamespace(manage_guild=True),
         response=SimpleNamespace(send_message=AsyncMock(),send_modal=AsyncMock(),defer=AsyncMock(),is_done=lambda:False),followup=SimpleNamespace(send=AsyncMock(return_value=msg)))
     def defer(*args,**kwargs): i.response.is_done=lambda:True
     i.response.defer.side_effect=defer
@@ -26,7 +26,7 @@ def state(tmp_path,monkeypatch):
     monkeypatch.delenv('DISCORD_GUILD_ID',raising=False)
     monkeypatch.setenv('BEEMINDER_ENABLED','false')
     clock=[parse_local('2026-11-02 12:00','America/Chicago')]
-    s=Store(tmp_path/'real.sqlite',clock=lambda:clock[0]);s.set('guild_id',123)
+    s=Store(tmp_path/'real.sqlite',clock=lambda:clock[0]);s.set('guild_id',123);s.set('debug_channel_id',777)
     for uid in [100,2,3,4]: s.member(uid,f'Member {uid}')
     yield s,clock
     s.close()
@@ -75,7 +75,7 @@ def test_proposals_automatically_create_and_extend_poll_without_losing_votes(sta
     assert s.one('SELECT 1 FROM votes WHERE poll_id=? AND user_id=100 AND slot=0',(pid,))
     assert s.session(sid)['start_at']==original
     assert s.one('SELECT state FROM replacement_requests WHERE user_id=2')['state']=='suggested'
-    with pytest.raises(RuleError): s.suggest(sid,4,option,0)
+    assert s.suggest(sid,4,option,0)==pid  # All participants can offer an alternative during a group poll.
     with pytest.raises(RuleError): s.suggest(sid,2,option,1)
 
 
@@ -90,7 +90,7 @@ def test_whole_week_rehearsal_midweek_rsvp_recap_and_following_invitation(state)
         assert demo.test_clock.astimezone(ZoneInfo(demo.store.tz)).strftime('%a %H:%M')=='Wed 18:00'
         assert demo.store.monthly_count('2026-11')==0
         for p in demo.store.roster(): demo.store.answer(sid,p['user_id'],True,0)
-        after=next(b for b in home.children if b.label=='3 · Jump after class')
+        after=next(b for b in home.children if b.label=='4 · Jump after class')
         j=interaction();await after.callback(j)
         recap_messages=[call for call in j.followup.send.call_args_list if isinstance(call.kwargs.get('view'),Recap)]
         assert len(recap_messages)==1
@@ -101,7 +101,7 @@ def test_whole_week_rehearsal_midweek_rsvp_recap_and_following_invitation(state)
         await modal.submit(submit,['Chapter 4 pages 20–22: pronouns','Chapter 4 pages 23–25: verbs','Review chapter 4 Quizlet'])
         assert demo.store.monthly_count('2026-11')==1
         assert all(p['points']==1 for p in demo.store.standings('2026-11'))
-        next_week=next(b for b in home.children if b.label=='4 · Next week’s announcement')
+        next_week=next(b for b in home.children if b.label=='5 · Next week’s announcement')
         l=interaction();await next_week.callback(l)
         following=demo.store.rows('SELECT * FROM sessions ORDER BY start_at')[-1]
         assert following['id']!=sid

@@ -66,6 +66,8 @@ class DemoBot(MizanBot):
     def check_guild(self, interaction):
         if self.demo_closed: raise RuleError('This test was reset or the bot restarted. Open Test mode again.')
         self.root.require_ta(interaction)
+        from .debug import check_channel
+        check_channel(self.root,interaction)
         if interaction.user.id != self.demo_owner:
             raise RuleError('This test session belongs to another TA. Open your own Test mode.')
         self.current_interaction=interaction
@@ -135,6 +137,8 @@ class AdvancedControls(Menu):
             root.test_sessions.pop(i.user.id,None)
             await open_test(root,i)
         self.button('Reset test session',reset,style=discord.ButtonStyle.danger)
+        async def progress(i): await progress_tests(root,demo,i)
+        self.button('Streaks & danger',progress)
 
 
 class TestControls(Menu):
@@ -154,6 +158,8 @@ class TestControls(Menu):
         self.button('1 · Run midweek RSVP',midweek,style=discord.ButtonStyle.primary)
         async def members(i): await simulated_rsvp(demo,i)
         self.button('2 · Answer as members',members)
+        async def vote(i): await simulated_votes(demo,i)
+        self.button('3 · Vote as all four',vote)
         async def after(i):
             demo.check_guild(i)
             rows=demo.store.rows("SELECT * FROM sessions WHERE status='scheduled' ORDER BY start_at LIMIT 1")
@@ -162,7 +168,7 @@ class TestControls(Menu):
             await i.response.defer()
             await demo.tick()
             await send(i,'🧪 **Class has ended.** The bot has prompted the TA for a recap. Open that prompt, record any attendance exceptions, then say what you covered and what is next.',TestControls(root,demo))
-        self.button('3 · Jump after class',after)
+        self.button('4 · Jump after class',after)
         async def next_week(i):
             from zoneinfo import ZoneInfo
             demo.check_guild(i)
@@ -176,9 +182,9 @@ class TestControls(Menu):
             try: await demo.tick()
             finally: demo.store.set('weekly_invites',False)
             await send(i,'🧪 **Next Wednesday: new invitation sent.** Check its Where we left off, next lesson, and preparation fields.',TestControls(root,demo))
-        self.button('4 · Next week’s announcement',next_week)
+        self.button('5 · Next week’s announcement',next_week)
         async def tools(i): await send(i,'🧪 Optional test tools',AdvancedControls(root,demo))
-        self.button('Other test tools',tools)
+        self.button('Streaks & danger tests',tools)
         async def reset(i):
             await demo.close();root.test_sessions.pop(i.user.id,None)
             await open_test(root,i)
@@ -233,10 +239,29 @@ async def simulated_votes(demo,interaction):
                 demo.check_guild(k)
                 demo.store.vote(p['id'],int(uid),int(slot))
                 await k.response.defer()
-                await demo.update_poll(p['id'])
+                from .consensus import update
+                await update(demo,p['id'])
+                if demo.store.poll(p['id'])['status']=='confirmed':
+                    return await send(k,'✅ All four agreed. The class moved automatically and the card shows 4/4 coming.',TestControls(demo.root,demo))
+                if demo.store.poll(p['id'])['status']=='no_agreement':
+                    return await offer_new_round(demo,k,p['session_id'],int(uid),p['revision'])
                 await send(k,'🧪 Availability updated. Choose another option to toggle it, or return to choose another member.',options)
             async def another(k): await simulated_votes(demo,k)
             options.button('Choose another member',another)
+            async def none(k):
+                from .consensus import update
+                demo.check_guild(k)
+                current=demo.store.poll(p['id'])
+                if current['status']!='open' or demo.store.clock()>=datetime.fromisoformat(current['deadline']): raise RuleError('This round is closed.')
+                with demo.store.db:
+                    demo.store.db.execute('DELETE FROM votes WHERE poll_id=? AND user_id=?',(p['id'],int(uid)))
+                    demo.store.db.execute('INSERT INTO votes VALUES(?,?,-1)',(p['id'],int(uid)))
+                await k.response.defer()
+                await update(demo,p['id'])
+                if demo.store.poll(p['id'])['status']=='no_agreement':
+                    return await offer_new_round(demo,k,p['session_id'],int(uid),p['revision'])
+                await send(k,'🧪 None work recorded. Vote as another member or offer a different time.',options)
+            options.button('None work',none)
             options.select('Mark an option available',[discord.SelectOption(label=label(d),value=str(n)) for n,d in enumerate(p['options'])],slot_selected)
             await send(j,'🧪 Toggle every option this member can attend.',options)
         people.select('Play which member?',[discord.SelectOption(label=m['name'][:100],value=str(m['user_id'])) for m in demo.store.participants(p['session_id'])],person_selected)
@@ -268,10 +293,51 @@ async def clock_menu(demo,interaction):
 
 
 async def open_test(root,interaction):
-    root.require_ta(interaction)
-    demo=root.test_sessions.get(interaction.user.id)
-    if demo is None or demo.demo_closed:
-        demo=DemoBot(root,interaction.user.id,interaction.user.display_name)
-        root.test_sessions[interaction.user.id]=demo
-    demo.check_guild(interaction)
-    await send(interaction,'🧪 **Rehearse a whole class week**\nFour simulated members; only you see this.\n\n**1.** Wednesday RSVP nudge.\n**2.** Answer I can come / I can’t for each person. Declines need a replacement time and deduct Al-Mizan.\n**3.** After class, fill in the recap prompt.\n**4.** Preview next week’s announcement with that recap and the next lesson.\n\nReal members, records, messages and charges are untouched. Test sessions reset on deployment.',TestControls(root,demo))
+    from .debug import get_demo
+    demo=get_demo(root,interaction)
+    await send(interaction,'🧪 **Rehearse a whole class week**\nFour simulated members; only you see this.\n\n**1.** Wednesday RSVP nudge.\n**2.** Answer I can come / I can’t for each person. Declines need a replacement time and deduct Al-Mizan.\n**3.** Vote as all four: the time locks automatically.\n**4.** After class, confirm attendance and recap.\n**5.** Preview the next announcement, streaks and monthly danger status.\n\nReal members, records, messages and charges are untouched. Test sessions reset on deployment.',TestControls(root,demo))
+
+
+async def progress_tests(root,demo,i):
+    from . import progress
+    demo.check_guild(i)
+    view=Menu(demo)
+    async def end_month(j):
+        import calendar
+        from zoneinfo import ZoneInfo
+        demo.check_guild(j)
+        d=demo.store.clock().astimezone(ZoneInfo(demo.store.tz))
+        demo.test_clock=d.replace(day=calendar.monthrange(d.year,d.month)[1],hour=12,minute=0)
+        await j.response.defer()
+        await demo.tick()
+        await send(j,'🧪 End-of-month check:\n'+progress.summary(demo.store),TestControls(root,demo))
+    view.button('Jump to month-end danger',end_month)
+    async def board(j): await demo.tree.get_command('mizan').callback(j)
+    view.button('Show streaks and Al-Mizan',board)
+    async def example(j):
+        from .core import parse_local
+        demo.check_guild(j)
+        owner=demo.demo_owner;name=j.user.display_name
+        await demo.close()
+        fresh=DemoBot(root,owner,name);root.test_sessions[owner]=fresh;fresh.check_guild(j)
+        for start in ['2026-10-03 07:00','2026-10-10 07:00','2026-11-07 06:15','2026-11-14 06:15']:
+            dt=parse_local(start,fresh.store.tz);fresh.test_clock=dt-timedelta(days=3)
+            sid=fresh.store.create_class(dt,60,'IACC Plano','Test streak example',owner)
+            for member in fresh.store.roster(): fresh.store.answer(sid,member['user_id'],True,0)
+            fresh.test_clock=dt+timedelta(minutes=61);fresh.store.held(sid,owner)
+        fresh.test_clock=parse_local('2026-11-15 12:00',fresh.store.tz)
+        await send(j,'🧪 Sample records created for October and November: four fully attended classes.\n🔥 Each person: 4-class streak. Group: 2 successful months.\n'+progress.summary(fresh.store),TestControls(root,fresh))
+    view.button('Reset + show a 2-month streak',example)
+    async def home(j): await open_test(root,j)
+    view.button('Test home',home)
+    await send(i,'🧪 **Streaks & danger**\nPersonal attendance streaks survive month changes. An unexcused no-show breaks one; an excused absence pauses it. Group streaks track consecutive months with 2 full-group classes.\n'+progress.summary(demo.store),view)
+
+
+async def offer_new_round(demo,i,sid,uid,revision):
+    from .flow import suggest_menu
+    view=Menu(demo)
+    async def suggest(j): await suggest_menu(demo,j,sid,uid,revision)
+    view.button('Suggest a new time as this member',suggest,style=discord.ButtonStyle.primary)
+    async def home(j): await open_test(demo.root,j)
+    view.button('Test home',home)
+    await send(i,'🧪 No time worked for all four. This round is closed; a fresh suggestion starts the next vote automatically. No extra points were deducted for rejecting a poll option.',view)

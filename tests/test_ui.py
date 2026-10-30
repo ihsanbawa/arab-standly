@@ -89,7 +89,7 @@ def test_all_slash_commands_have_no_required_arguments(state):
         bot=MizanBot(state[0])
         for command in bot.tree.get_commands():
             assert all(not p.required for p in command.parameters), command.name
-        assert len(ui.Panel(bot).children)==10
+        assert len(ui.Panel(bot).children)==9
         assert ui.Panel(bot).is_persistent()
         await bot.close()
     asyncio.run(run())
@@ -170,12 +170,12 @@ def test_panel_and_automatic_announcement_recover_and_do_not_repeat(state):
         bot.update_card=AsyncMock(side_effect=card)
         await bot.tick();await bot.tick()
         assert len(s.rows('SELECT * FROM sessions'))==1
-        assert bot.update_card.call_count==1
+        assert bot.update_card.call_count==2
         assert channel.send.call_count==1
         # Recover an unannounced, persisted regular class without making a new class.
         with s.db: s.db.execute('UPDATE sessions SET message_id=NULL')
         await bot.tick()
-        assert bot.update_card.call_count==2
+        assert bot.update_card.call_count==3
         assert len(s.rows('SELECT * FROM sessions'))==1
         assert s.monthly_count('2026-10')==0
         await bot.close()

@@ -30,6 +30,8 @@ class Menu(discord.ui.View):
         self.bot = bot
 
     async def interaction_check(self, interaction):
+        if self.__class__.__name__ not in {'Panel','DebugPanel'}:
+            guard_context(self.bot,interaction)
         self.bot.check_guild(interaction)
         return True
 
@@ -51,6 +53,11 @@ class Menu(discord.ui.View):
         return s
 
 
+def guard_context(bot,interaction):
+    if not hasattr(bot,'demo_owner') and bot.store.get('debug_channel_id') and getattr(interaction,'channel_id',None)==bot.store.get('debug_channel_id'):
+        raise RuleError('This older panel is not part of the current test session. Use Start weekly rehearsal in this channel.')
+
+
 async def send(interaction, text, view=None):
     message = getattr(interaction, 'message', None)
     private_menu = bool(getattr(getattr(message, 'flags', None), 'ephemeral', False)) and not getattr(message, 'embeds', [])
@@ -69,29 +76,19 @@ async def send(interaction, text, view=None):
 class ConflictView(Menu):
     def __init__(self, bot, sid, revision):
         super().__init__(bot, persistent=True)
-        async def keep(i):
-            bot.require_ta(i)
-            guarded(bot, sid, revision)
-            if bot.store.session(sid)['status'] != 'scheduled':
-                raise RuleError('This class is no longer scheduled. Open Class controls.')
-            with bot.store.db:
-                bot.store.log(i.user.id, 'original_time_kept', {'session': sid})
-            await send(i, 'Original time kept. The rest can still meet; no penalty was assigned. You can review attendance after class.')
         async def alternatives(i):
-            bot.require_ta(i)
-            guarded(bot, sid, revision)
-            await poll_preview(bot, i, sid)
-        self.button('Keep original time', keep, custom_id=f'standly:keep:{sid}:{revision}')
-        self.button('Find alternative times', alternatives, custom_id=f'standly:alternatives:{sid}:{revision}', style=discord.ButtonStyle.primary)
+            from .flow import suggest_menu
+            bot.check_guild(i)
+            await suggest_menu(bot,i,sid,i.user.id,revision)
+        self.button('Suggest another time',alternatives,custom_id=f'standly:alternatives:{sid}:{revision}',style=discord.ButtonStyle.primary)
 
 
-async def invoke(bot, interaction, name, **kwargs):
-    # Reuse the command's permission checks, financial guards and audit trail.
-    await bot.tree.get_command(name).callback(interaction, **kwargs)
+async def invoke(bot,interaction,name,**kwargs):
+    await bot.tree.get_command(name).callback(interaction,**kwargs)
 
 
-def guarded(bot, sid, revision):
-    if bot.store.session(sid)['revision'] != revision:
+def guarded(bot,sid,revision):
+    if bot.store.session(sid)['revision']!=revision:
         raise RuleError('This class has changed. Open its controls again.')
 
 
@@ -105,9 +102,6 @@ class Panel(Menu):
             async def clicked(i, a=action):
                 await route(bot, i, a)
             self.button(title, clicked, custom_id=f'standly:home:{action}')
-        if not hasattr(bot, 'demo_owner'):
-            async def test(i): await route(bot, i, 'test')
-            self.button('Test mode', test, custom_id='standly:home:test')
 
 
 async def ensure_panel(bot):
@@ -130,6 +124,7 @@ class Form(discord.ui.Modal):
                 style=discord.TextStyle.short))
 
     async def on_submit(self, interaction):
+        guard_context(self.bot,interaction)
         self.bot.check_guild(interaction)
         await self.submit(interaction, [str(x) for x in self.children])
 
@@ -270,7 +265,7 @@ async def class_action(bot, interaction, action, sid):
         view=Menu(bot)
         for name,a in [('Reschedule / poll','poll'),('Attendance exception','attendance'),
                        ('Class happened · add recap','recap'),("Class didn't happen",'cancel'),
-                       ('Reopen confirmation','reopen'),('Waive penalty','waive'),('Confirm poll time','confirm_slot')]:
+                       ('Reopen confirmation','reopen'),('Waive penalty','waive'),('View replacement votes','confirm_slot')]:
             async def clicked(i,action=a):
                 guarded(bot,sid,rev)
                 await class_action(bot,i,action,sid)
@@ -337,36 +332,18 @@ async def poll_preview(bot,interaction,sid,slots=None):
         values=[d.astimezone(ZoneInfo('America/Chicago')).strftime('%Y-%m-%d %H:%M') for d in slots]
         await i.response.send_modal(Form(bot,'Alternative times · Dallas',[(f'Option {n+1}',values[n] if n<len(values) else '',n<2,'YYYY-MM-DD HH:MM') for n in range(3)],submitted))
     view.button('Edit alternatives',edit)
-    await send(interaction,'**Proposed replacement times**\n'+'\n'.join(f'• {label(d)}' for d in slots)+'\n\nPoll runs up to 24 hours, ending at least an hour before the earliest option. Original class stays unchanged until you confirm a replacement.',view)
+    await send(interaction,'**Proposed replacement times**\n'+'\n'.join(f'• {label(d)}' for d in slots)+'\n\nPoll runs up to 24 hours, ending at least an hour before the earliest option. A time locks automatically as soon as all four agree.',view)
 
 
 async def choose_poll(bot,interaction,sid=None,pid=None):
-    bot.require_ta(interaction)
+    bot.check_guild(interaction)
     if pid is None:
-        rows=bot.store.rows("SELECT * FROM polls WHERE status='open'"+(' AND session_id=?' if sid else '')+' ORDER BY id DESC LIMIT 25',(sid,) if sid else ())
-        if not rows: raise RuleError('No open replacement poll. Choose Reschedule / poll in Class controls.')
-        if len(rows)>1:
-            view=Menu(bot)
-            async def selected(i,v): await choose_poll(bot,i,pid=int(v))
-            view.select('Which replacement poll?',[discord.SelectOption(label=f"Class {label(bot.store.session(p['session_id'])['start_at'])}",value=str(p['id'])) for p in rows],selected)
-            return await send(interaction,'Choose a replacement poll.',view)
-        pid=rows[0]['id']
+        p=bot.store.one("SELECT id FROM polls WHERE status='open'"+(' AND session_id=?' if sid else '')+' ORDER BY id DESC LIMIT 1',(sid,) if sid else ())
+        if not p: raise RuleError('No open poll. A participant who cannot attend can suggest a replacement time.')
+        pid=p['id']
+    from .bot import PollView
     p=bot.store.poll(pid)
-    sid=p['session_id']
-    view=Menu(bot)
-    async def slot_selected(i,v):
-        idx=int(v)
-        available={r['user_id'] for r in bot.store.rows('SELECT user_id FROM votes WHERE poll_id=? AND slot=?',(pid,idx))}
-        conflicts=[m for m in bot.store.participants(sid) if m['user_id'] not in available]
-        async def person_selected(j,person):
-            async def apply(k): await invoke(bot,k,'confirm_slot',poll_id=pid,option=idx+1,responsible=person,accept_conflicts=bool(conflicts))
-            text=f"Move class to **{label(p['options'][idx])}**? Everyone must RSVP again.\n"
-            text+=('**Not marked available:** '+', '.join(safe(m['name']) for m in conflicts)+'. Confirming overrides these availability conflicts.\n') if conflicts else 'Everyone marked this option available.\n'
-            text+=(f'Assign the accepted-commitment penalty to **{safe(person.display_name)}** (−1 or −2 for last minute, if they previously accepted).' if person else 'No individual penalty assigned.')
-            await confirm(bot,j,text,apply,sid)
-        await choose_person(bot,i,sid,person_selected,title='Responsibility for moving class',optional=True)
-    view.select('Choose the new time',[discord.SelectOption(label=label(d),value=str(n)) for n,d in enumerate(p['options'])],slot_selected)
-    await send(interaction,'Choose a time, then review availability and any Al-Mizan penalty before confirming.',view)
+    await interaction.response.send_message(embed=bot.poll_embed(pid),view=PollView(bot,pid,len(p['options'])),ephemeral=True)
 
 
 async def roster_menu(bot, interaction, active=True):
@@ -458,6 +435,9 @@ async def settings_menu(bot,interaction):
 
 
 async def route(bot,interaction,action,**kwargs):
+    if not hasattr(bot,'demo_owner') and bot.store.get('debug_channel_id') and getattr(interaction,'channel_id',None)==bot.store.get('debug_channel_id') and action!='test':
+        from .debug import get_demo
+        return await route(get_demo(bot,interaction),interaction,action,**kwargs)
     bot.check_guild(interaction)
     if action=='test':
         from .testing import open_test
@@ -481,6 +461,8 @@ async def route(bot,interaction,action,**kwargs):
         async def selected(i,v): await invoke(bot,i,'mizan',month=v)
         view.select('Choose month',[discord.SelectOption(label=m,value=m) for m in months],selected)
         board=bot.store.standings(months[0])
-        await send(interaction,'⚖️ **المِيزَان · '+months[0]+'**\n'+('\n'.join(f"{safe(p['name'])}: **{p['points']:+d}**" for p in board) or 'Add your four class members first.')+f'\nGroup classes held: **{bot.store.monthly_count(months[0])}/2**',view)
+        from . import progress
+        streak=progress.group_streak(bot.store)
+        await send(interaction,'⚖️ **المِيزَان · '+months[0]+'**\n'+('\n'.join(f"{safe(p['name'])}: **{p['points']:+d}** · 🔥 {progress.personal(bot.store,p['user_id'])['current']} attended" for p in board) or 'Add your four class members first.')+f"\n🔥 Group: {streak['current']} successful months (best {streak['best']}).\n"+progress.summary(bot.store),view)
         return
     return await invoke(bot,interaction,action)

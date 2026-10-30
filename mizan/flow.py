@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo
 import discord
 from .core import RuleError,stamp,parse_local
 from .prayer import upcoming,fajr_slot
-from .ui import Menu,Form,label,safe,send
+from .ui import Menu,Form,label,safe,send,guard_context
 from .content import roast
 
 
@@ -24,6 +24,7 @@ class Invitation(discord.ui.View):
 
 
 async def respond(bot,i,sid,uid,coming,revision):
+    guard_context(bot,i)
     bot.check_guild(i)
     penalty=bot.store.answer(sid,uid,coming,revision)
     await i.response.defer()
@@ -36,15 +37,17 @@ async def respond(bot,i,sid,uid,coming,revision):
     else:
         await suggest_menu(bot,i,sid,uid,revision)
         await bot.notify_once(f'decline:{sid}:{revision}:{uid}:{penalty["points"]}',
-            f"<@{uid}> can't make class. **Al-Mizan {penalty['points']}**. They need to suggest another time. The original class stays scheduled until a TA confirms a move.\n"+roast(sid+uid))
+            f"<@{uid}> can't make class. **Al-Mizan {penalty['points']}**. They need to suggest another time. The time moves automatically only when all four agree.\n"+roast(sid+uid))
 
 
 async def suggest_menu(bot,i,sid,uid,revision):
+    guard_context(bot,i)
     bot.check_guild(i)
     if uid!=i.user.id and not hasattr(bot,'demo_owner'): raise RuleError('Suggest a time for yourself.')
     s=bot.store.session(sid)
     response=bot.store.one('SELECT response FROM rsvps WHERE session_id=? AND revision=? AND user_id=?',(sid,revision,uid))
-    if not response or response['response'] not in {'unavailable','change'}:
+    rescheduling=bot.store.one("SELECT 1 FROM polls WHERE session_id=? AND revision=? AND status IN ('open','no_agreement')",(sid,revision))
+    if (not response or response['response'] not in {'unavailable','change'}) and not rescheduling and s['status']!='needs_replacement':
         raise RuleError("Choose I can't on the invitation first.")
     if s['revision']!=revision: raise RuleError('This invitation changed. Open the current class.')
     view=Menu(bot)
@@ -68,12 +71,14 @@ async def suggest_menu(bot,i,sid,uid,revision):
 
 
 async def submit_suggestion(bot,i,sid,uid,revision,dt):
+    guard_context(bot,i)
     bot.check_guild(i)
     if uid!=i.user.id and not hasattr(bot,'demo_owner'): raise RuleError('Suggest a time for yourself.')
     pid=bot.store.suggest(sid,uid,dt,revision)
     await i.response.defer()
     await bot.update_card(sid)
-    await bot.update_poll(pid,create=True)
+    from .consensus import update
+    await update(bot,pid)
     view=None
     if hasattr(bot,'demo_owner'):
         from .testing import simulated_rsvp,TestControls
@@ -82,7 +87,7 @@ async def submit_suggestion(bot,i,sid,uid,revision,dt):
         async def home(j): await send(j,'🧪 Continue the class-week rehearsal.',TestControls(bot.root,bot))
         view.button('Answer as another member',again)
         view.button('Test home',home)
-    await send(i,'📅 Suggested **'+label(dt)+'**. The group can vote on that time now. The TA confirms any move; the original time still stands.',view)
+    await send(i,'📅 Suggested **'+label(dt)+'**. The group can vote on that time now. When all four agree on an option, it is scheduled automatically. The original time stays until then.',view)
 
 
 class SuggestionReminder(Menu):
@@ -120,7 +125,7 @@ class Recap(Menu):
                         with bot.store.db:
                             bot.store.db.execute('UPDATE sessions SET topic=?,prep=? WHERE id=?',(v[1],v[2],future['id']))
                         await bot.update_card(future['id'])
-                await send(j,'✅ Class confirmed and recap saved. Next week’s invitation will show where you left off, the next lesson, and preparation.')
+                await send(j,'✅ Attendance and recap saved. Only all-four attendance counts toward 2/month. Next week’s invitation will include this recap and next lesson.')
             draft=bot.store.get(f'recap_draft:{sid}',[])
             fields=[('What did we cover?',previous.get('recap') or (draft[0] if draft else ''),True,'Chapter / pages / what you finished'),
                     ('What are we doing next?',previous.get('next_lesson') or (draft[1] if draft else s['topic']),True,'Next lesson / chapter / pages'),
