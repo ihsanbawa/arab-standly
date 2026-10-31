@@ -185,7 +185,18 @@ class TestControls(Menu):
             await send(i,'🧪 **Next Wednesday: new invitation sent.** Check its Where we left off, next lesson, and preparation fields.',TestControls(root,demo))
         self.button('5 · Next week’s announcement',next_week)
         async def tools(i): await send(i,'🧪 Optional test tools',AdvancedControls(root,demo))
-        self.button('Streaks & danger tests',tools)
+        self.button('More test tools',tools)
+        async def welcome(i):
+            from .welcome import welcome_embed
+            demo.check_guild(i)
+            await i.response.send_message(
+                '🧪 **Welcome preview** · This is the card members receive privately. No DM was sent and no welcome-delivery record was changed.',
+                embed=welcome_embed(),view=TestControls(root,demo),ephemeral=True,
+                allowed_mentions=discord.AllowedMentions.none())
+        self.button('Welcome preview',welcome)
+        async def browse(i):
+            await send(i,'🧪 **Test class controls**\nThe same member and TA menus, backed by your simulated class. Open More for attendance, roster and settings. Phone sends are simulated; Beeminder is disabled.',Panel(demo))
+        self.button('Browse test controls',browse)
         async def reset(i):
             await demo.close();root.test_sessions.pop(i.user.id,None)
             await open_test(root,i)
@@ -287,7 +298,7 @@ async def clock_menu(demo,interaction):
 async def open_test(root,interaction):
     from .debug import get_demo
     demo=get_demo(root,interaction)
-    await send(interaction,'🧪 **Rehearse a whole class week**\nFour simulated members; only you see this.\n\n**1.** Wednesday RSVP nudge.\n**2.** Answer I can come / I can’t for each person. Declines need a replacement time and deduct Al-Mizan.\n**3.** Vote as all four: the time locks automatically.\n**4.** After class, confirm attendance and recap.\n**5.** Preview the next announcement, streaks and monthly danger status.\n\nReal members, records, messages and charges are untouched. Test sessions reset on deployment.',TestControls(root,demo))
+    await send(interaction,'🧪 **Rehearse a whole class week**\nFour simulated members; only you see this.\n\n**1.** Wednesday RSVP nudge.\n**2.** Answer I can come / I can’t for each person. Declines need a replacement time and deduct Al-Mizan.\n**3.** Vote as all four: the time locks automatically.\n**4.** After class, confirm attendance and recap.\n**5.** Preview the next announcement, streaks and monthly danger status.\n\nUse **Welcome preview** to see the private greeting. **Browse test controls** opens the same member and TA menus with simulated records. **More test tools** includes phone escalation, clock controls, streaks, danger and the mock commitment report.\n\nReal members, records, messages and charges are untouched. Test sessions reset on deployment.',TestControls(root,demo))
 
 
 async def progress_tests(root,demo,i):

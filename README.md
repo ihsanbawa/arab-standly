@@ -151,3 +151,5 @@ With **Server Members Intent** enabled in Discord Developer Portal and `WELCOME_
 ### Shaykh Standly’s voice
 
 A playful, stern Arabic teacher: practical reminders, dry humour, and roasts about excuses, snoozing and missing RSVPs. The curated 24-line Arabic collection includes English spoiler translations and vocabulary notes. Each member gets a persistent rotation through the collection before a line repeats. The Arabic welcome explains the rules with the same voice; roasts never replace scheduling information or a clear next action.
+
+Test home includes **Welcome preview** (the real greeting card, private and without changing delivery markers), **Browse test controls** (the same member/TA menus with simulated records), and **More test tools** (clock, WUPHF, streaks, danger and mock group commitment). Production account configuration and real phone delivery remain outside the rehearsal.

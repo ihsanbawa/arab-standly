@@ -221,3 +221,31 @@ def test_automatic_wuphf_rehearsal_runs_both_stages_without_external_delivery(ro
         assert not root.rows('SELECT * FROM wuphf_jobs')
         await bot.close()
     asyncio.run(run())
+
+
+def test_welcome_preview_is_replayable_without_live_or_demo_delivery_markers(root):
+    async def run():
+        from mizan.testing import TestControls
+        from mizan.welcome import welcome_embed
+        bot=MizanBot(root);i=interaction();await open_test(bot,i)
+        demo=bot.test_sessions[100]
+        view=TestControls(bot,demo)
+        labels={b.label for b in view.children}
+        assert {'Welcome preview','Browse test controls','More test tools'} <= labels
+        preview=next(b for b in view.children if b.label=='Welcome preview')
+        for _ in range(2):
+            j=interaction()
+            await preview.callback(j)
+            sent=j.response.send_message.call_args
+            assert sent.kwargs['ephemeral'] is True
+            assert sent.kwargs['allowed_mentions'].users is False
+            assert sent.kwargs['embed'].to_dict()==welcome_embed().to_dict()
+            assert not root.get('welcome:sent:100')
+            assert not root.get('welcome:seen:100')
+            assert not demo.store.get('welcome:sent:100')
+            assert not demo.store.get('welcome:seen:100')
+        with pytest.raises(RuleError):
+            await preview.callback(interaction(ta=False))
+        assert not root.rows('SELECT * FROM audit')
+        await bot.close()
+    asyncio.run(run())
