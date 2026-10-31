@@ -50,7 +50,6 @@ async def suggest_menu(bot,i,sid,uid,revision):
     if (not response or response['response'] not in {'unavailable','change'}) and not rescheduling and s['status']!='needs_replacement':
         raise RuleError("Choose I can't on the invitation first.")
     if s['revision']!=revision: raise RuleError('This invitation changed. Open the current class.')
-    view=Menu(bot)
     options=[]
     poll=bot.store.one("SELECT id FROM polls WHERE session_id=? AND revision=? AND status='open' AND deadline>? ORDER BY id DESC LIMIT 1",(sid,revision,stamp(bot.store.clock())))
     if poll: options.extend(datetime.fromisoformat(x) for x in bot.store.poll(poll['id'])['options'])
@@ -60,34 +59,59 @@ async def suggest_menu(bot,i,sid,uid,revision):
         options.append(fajr_slot(sats[0].astimezone(ZoneInfo('America/Chicago')).date()+timedelta(days=1),bot.store.get('fajr_offset',15)))
     except RuleError: pass
     options=sorted({x for x in options if x>bot.store.clock()+timedelta(minutes=5) and stamp(x)!=s['start_at']})[:20]
-    async def selected(j,value): await submit_suggestion(bot,j,sid,uid,revision,datetime.fromisoformat(value))
-    if options: view.select('When CAN you come?',[discord.SelectOption(label=label(x),value=stamp(x)) for x in options],selected)
-    async def custom(j):
-        async def submitted(k,v): await submit_suggestion(bot,k,sid,uid,revision,parse_local(v[0],bot.store.tz))
-        await j.response.send_modal(Form(bot,'Suggest a replacement time',[('When can you come? · Dallas time','',True,'YYYY-MM-DD HH:MM')],submitted))
-    view.button('Another date / time',custom)
+    view=ReplacementTimes(bot,sid,uid,revision,options)
     penalty=bot.store.one('SELECT points FROM penalties WHERE session_id=? AND user_id=?',(sid,uid))
-    await send(i,f"**You can’t make this class. When can you come instead?**\nAl-Mizan: **{penalty['points'] if penalty else 0}** (early −1; within 24 hours −2). A TA can excuse emergencies.\nPick one replacement time below. We’ll ask the group about it automatically. Closing this menu leaves your suggestion pending.",view)
+    await send(i,f"**You can’t make this class. When can you come instead?**\nAl-Mizan: **{penalty['points'] if penalty else 0}** (early −1; within 24 hours −2). A TA can excuse emergencies.\nSelect every time you can attend (up to three), then tap **Suggest selected times**. We’ll ask the group about them together. Closing this menu leaves your suggestion pending.",view)
+
+
+class ReplacementTimes(Menu):
+    def __init__(self,bot,sid,uid,revision,options):
+        super().__init__(bot)
+        self.selected=[]
+        if options:
+            select=discord.ui.Select(placeholder='When CAN you come?',min_values=1,max_values=min(3,len(options)),
+                options=[discord.SelectOption(label=label(x),value=stamp(x)) for x in options])
+            async def picked(i):
+                self.selected=[datetime.fromisoformat(v) for v in select.values]
+                for option in select.options: option.default=option.value in select.values
+                # Selecting changes only this private menu; save publishes the whole batch.
+                await i.response.edit_message(view=self)
+            select.callback=picked
+            self.add_item(select)
+            async def save(i): await submit_suggestions(bot,i,sid,uid,revision,self.selected)
+            self.button('Suggest selected times',save,style=discord.ButtonStyle.success)
+        async def custom(i):
+            async def submitted(j,values):
+                times=self.selected+[parse_local(v,bot.store.tz) for v in values if v.strip()]
+                await submit_suggestions(bot,j,sid,uid,revision,times)
+            await i.response.send_modal(Form(bot,'Other replacement times · Dallas',[
+                ('Time 1','',True,'YYYY-MM-DD HH:MM'),('Time 2 (optional)','',False,'YYYY-MM-DD HH:MM'),('Time 3 (optional)','',False,'YYYY-MM-DD HH:MM')],submitted))
+        self.button('Other dates / times',custom)
 
 
 async def submit_suggestion(bot,i,sid,uid,revision,dt):
+    return await submit_suggestions(bot,i,sid,uid,revision,[dt])
+
+
+async def submit_suggestions(bot,i,sid,uid,revision,times):
     guard_context(bot,i)
     bot.check_guild(i)
-    if uid!=i.user.id and not hasattr(bot,'demo_owner'): raise RuleError('Suggest a time for yourself.')
-    pid=bot.store.suggest(sid,uid,dt,revision)
+    if uid!=i.user.id and not hasattr(bot,'demo_owner'): raise RuleError('Suggest times for yourself.')
+    times=list(dict.fromkeys(times))
+    pid=bot.store.suggest_many(sid,uid,times,revision)
     await i.response.defer()
     await bot.update_card(sid)
     from .consensus import update
     await update(bot,pid)
     view=None
     if hasattr(bot,'demo_owner'):
-        from .testing import simulated_rsvp,TestControls
+        from .testing import simulated_votes,TestControls
         view=Menu(bot)
-        async def again(j): await simulated_rsvp(bot,j,sid)
+        async def again(j): await simulated_votes(bot,j)
         async def home(j): await send(j,'🧪 Continue the class-week rehearsal.',TestControls(bot.root,bot))
         view.button('Answer as another member',again)
         view.button('Test home',home)
-    await send(i,'📅 Suggested **'+label(dt)+'**. The group can vote on that time now. When all four agree on an option, it is scheduled automatically. The original time stays until then.',view)
+    await send(i,'📅 Suggested:\n'+'\n'.join('• **'+label(dt)+'**' for dt in times)+'\nThe shared card shows every proposed time. Your availability is saved for these times; everyone else can select all that work. Class moves automatically when all four agree.',view)
 
 
 class SuggestionReminder(Menu):

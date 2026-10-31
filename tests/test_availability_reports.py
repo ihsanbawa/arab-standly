@@ -144,3 +144,47 @@ def test_private_ballot_save_refreshes_shared_card_and_prompts_none_work(world,m
         assert not s.rows('SELECT * FROM ledger')
         await bot.close()
     asyncio.run(run())
+
+
+def test_batch_suggestions_are_all_saved_or_none(world):
+    s,c,sid,pid,slots=world
+    third=parse_local('2026-10-06 07:00',s.tz)
+    fourth=parse_local('2026-10-07 07:00',s.tz)
+    with pytest.raises(RuleError,match='three alternatives'):
+        s.suggest_many(sid,1,[third,fourth],0)
+    assert s.poll(pid)['options']==slots
+    assert not s.rows('SELECT * FROM votes WHERE poll_id=?',(pid,))
+    assert not s.rows('SELECT * FROM replacement_requests')
+    assert s.suggest_many(sid,1,[parse_local('2026-10-04 07:00',s.tz),third],0)==pid
+    assert len(s.poll(pid)['options'])==3
+    assert [s.poll_answer(pid,1,n) for n in range(3)]==['yes','waiting','yes']
+    assert not s.rows('SELECT * FROM ledger')
+
+
+def test_initial_replacement_picker_multiselect_waits_for_save(world,monkeypatch):
+    from mizan.flow import ReplacementTimes
+    s,c,sid,pid,slots=world
+    async def run():
+        bot=MizanBot(s)
+        bot.update_card=AsyncMock()
+        update=AsyncMock();monkeypatch.setattr(consensus,'update',update)
+        view=ReplacementTimes(bot,sid,1,0,[parse_local(f'2026-10-0{n} 07:00',s.tz) for n in [4,5,6]])
+        select=next(b for b in view.children if isinstance(b,discord.ui.Select))
+        assert select.max_values==3
+        select._values=[select.options[0].value,select.options[1].value]
+        interaction=SimpleNamespace(guild_id=123,channel_id=456,user=SimpleNamespace(id=1),
+            response=SimpleNamespace(edit_message=AsyncMock(),defer=AsyncMock(),is_done=lambda:True),
+            followup=SimpleNamespace(send=AsyncMock()))
+        await select.callback(interaction)
+        assert not s.rows('SELECT * FROM votes WHERE poll_id=?',(pid,))
+        update.assert_not_awaited()
+        save=next(b for b in view.children if getattr(b,'label',None)=='Suggest selected times')
+        await save.callback(interaction)
+        assert [s.poll_answer(pid,1,n) for n in range(2)]==['yes','yes']
+        assert len(s.rows('SELECT * FROM polls'))==1
+        update.assert_awaited_once_with(bot,pid)
+        bot.update_card.assert_awaited_once_with(sid)
+        message=interaction.followup.send.call_args.args[0]
+        assert 'Oct 04' in message and 'Oct 05' in message
+        await bot.close()
+    asyncio.run(run())

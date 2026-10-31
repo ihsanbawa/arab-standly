@@ -443,11 +443,7 @@ class MizanBot(discord.Client):
                     )
         if len(self.store.roster())==4:
             d=progress.danger(self.store)
-            last=self.store.get(f'danger:last:{month}',{})
-            if last.get('date')!=str(local.date()) or d['level']>last.get('level',-1):
-                text=progress.summary(self.store)+'\n'+('\n'.join('• '+safe(x) for x in d['actions']) or 'Keep the streak going!')
-                message=await self.notify(text)
-                if message: self.store.set(f'danger:last:{month}',{'date':str(local.date()),'level':d['level']})
+            # Monthly danger belongs on the scheduling card, not in a duplicate message.
             signature=(d['level'],d['held'],d['confirmed'])
             if getattr(self,'progress_signature',None)!=signature:
                 for c in self.store.rows("SELECT id FROM sessions WHERE status='scheduled' AND message_id IS NOT NULL"):

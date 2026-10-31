@@ -340,6 +340,15 @@ class Store:
             self.log(uid,'replacement_suggested',{'session':sid,'time':stamp(proposed),'poll':pid})
         return pid
 
+    def suggest_many(self,sid,uid,proposed,revision):
+        times=list(dict.fromkeys(proposed))
+        if not times: raise RuleError('Select at least one time you can attend, then save.')
+        # Publish one poll only after every selected time has passed validation.
+        with self.transaction():
+            pid=None
+            for dt in times: pid=self.suggest(sid,uid,dt,revision)
+        return pid
+
     def save_lesson(self,sid,actor,recap,next_lesson,prep=''):
         s=self.session(sid)
         if not recap.strip() or not next_lesson.strip():

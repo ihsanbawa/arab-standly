@@ -178,20 +178,26 @@ def test_debug_rejects_live_channel_and_public_panel_has_no_test_button(world):
     asyncio.run(run())
 
 
-def test_daily_danger_deduplication_with_same_day_escalation(world):
+def test_danger_refreshes_cards_without_separate_alert_messages(world):
     s,c=world;s.set('channel_id',456);s.set('panel_message_id',1);s.set('weekly_invites',False)
     ids=[session(s,c,'2026-10-10 07:00'),session(s,c,'2026-10-17 07:00')]
     for sid in ids:
         for uid in range(1,5):s.answer(sid,uid,True,0)
+        with s.db: s.db.execute('UPDATE sessions SET message_id=10 WHERE id=?',(sid,))
     async def run():
         bot=MizanBot(s);bot.notify=AsyncMock(return_value=SimpleNamespace(id=9));bot.update_card=AsyncMock()
         await bot.tick();await bot.tick()
         reports=[x.args[0] for x in bot.notify.call_args_list if 'completed**' in x.args[0]]
-        assert len(reports)==1 and '🟡' in reports[0]
+        assert not reports
+        assert bot.update_card.await_count==2
+        assert any('On track' in f.value for f in bot.card(ids[0]).fields)
+        bot.update_card.reset_mock()
         s.answer(ids[-1],4,False,0)
         await bot.tick();await bot.tick()
         reports=[x.args[0] for x in bot.notify.call_args_list if 'completed**' in x.args[0]]
-        assert len(reports)==2 and '🔴' in reports[-1]
+        assert not reports
+        assert bot.update_card.await_count==2
+        assert any('At risk' in f.value for f in bot.card(ids[0]).fields)
         await bot.close()
     asyncio.run(run())
 
