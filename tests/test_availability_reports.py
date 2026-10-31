@@ -188,3 +188,47 @@ def test_initial_replacement_picker_multiselect_waits_for_save(world,monkeypatch
         assert 'Oct 04' in message and 'Oct 05' in message
         await bot.close()
     asyncio.run(run())
+
+
+def test_unanimous_move_posts_one_complete_confirmed_card_and_can_reopen(world):
+    from mizan import progress
+    s,c,sid,pid,slots=world
+    for uid in range(1,5):save_ballot(s,pid,uid,slots,{0})
+    assert consensus.settle(s,pid)==sid
+    with s.db:s.db.execute('UPDATE sessions SET message_id=100 WHERE id=?',(sid,))
+    async def run():
+        bot=MizanBot(s)
+        old=SimpleNamespace(edit=AsyncMock())
+        channel=SimpleNamespace(fetch_message=AsyncMock(return_value=old),send=AsyncMock(return_value=SimpleNamespace(id=200)))
+        bot.channel=AsyncMock(return_value=channel)
+        bot.update_card=AsyncMock();bot.update_poll=AsyncMock();bot.notify_once=AsyncMock()
+        await consensus.flush(bot)
+        await consensus.flush(bot)
+        channel.send.assert_awaited_once()
+        bot.notify_once.assert_not_awaited()
+        kwargs=channel.send.call_args.kwargs
+        assert 'Confirmed' in kwargs['embed'].title
+        assert 'all four agreed' in kwargs['content']
+        roster=next(f for f in kwargs['embed'].fields if '4/4 confirmed' in f.name)
+        assert roster.value.count('✅ Coming')==4
+        assert [b.label for b in kwargs['view'].children]==['I can come',"I can't"]
+        old.edit.assert_awaited_once_with(view=None)
+        assert s.session(sid)['message_id']==200
+        assert s.rows('SELECT * FROM auto_moves')[0]['announced']==1
+        assert not s.rows('SELECT * FROM attendance')
+        assert progress.personal(s,4)['current']==0
+        # A member can change the exact confirmed RSVP, losing the 4/4 lock.
+        penalty=s.answer(sid,4,False,1)
+        assert penalty['points']==-1
+        assert not progress.locked(s,sid)
+        assert 'Confirmed' not in bot.card(sid).title
+        assert 'Class confirmed' not in bot.card_message(sid)
+        assert s.one('SELECT withdrawn_at FROM commitments WHERE session_id=? AND revision=1 AND user_id=4',(sid,))['withdrawn_at']
+        replacement=s.suggest_many(sid,4,[parse_local('2026-10-06 07:00',s.tz),parse_local('2026-10-07 07:00',s.tz)],1)
+        assert replacement!=pid
+        assert s.poll(replacement)['revision']==1
+        assert s.session(sid)['revision']==1
+        assert [s.poll_answer(replacement,4,n) for n in range(2)]==['yes','yes']
+        assert len(s.rows('SELECT * FROM ledger WHERE user_id=4'))==1
+        await bot.close()
+    asyncio.run(run())

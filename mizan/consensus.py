@@ -66,11 +66,9 @@ async def flush(bot):
 
 
 async def _flush(bot):
-    from .bot import when
     for move in bot.store.rows('SELECT * FROM auto_moves WHERE announced=0 ORDER BY poll_id'):
         sid=move['session_id']
-        await bot.update_card(sid,create=True)
+        await bot.update_card(sid)
         await bot.update_poll(move['poll_id'])
-        await bot.notify_once(f"auto-move:{move['poll_id']}",
-            f"✅ **All four agreed — class #{sid} automatically moved.**\nPrevious: {when(move['old_start'])}\nNew: {when(move['new_start'])}\nYour votes count as RSVPs for this time. Reminders are updated.")
+        await bot.confirmed_card(sid,move['poll_id'])
         with bot.store.db: bot.store.db.execute('UPDATE auto_moves SET announced=1 WHERE poll_id=?',(move['poll_id'],))

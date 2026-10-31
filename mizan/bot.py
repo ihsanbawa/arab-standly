@@ -164,8 +164,10 @@ class MizanBot(discord.Client):
     def card(self, sid):
         s = self.store.session(sid)
         month = month_of(datetime.fromisoformat(s["start_at"]), self.store.tz)
+        confirmed=progress.locked(self.store,sid)
+        state="Confirmed ✅" if confirmed else s['status'].replace('_', ' ').title()
         embed = discord.Embed(
-            title=f"📚 Shaykh Standly · Class #{sid} · {s['status'].replace('_', ' ').title()}",
+            title=f"📚 Shaykh Standly · Class #{sid} · {state}",
             description=f"{when(s['start_at'])}\n📍 {safe(s['location'])}\n**{safe(s['topic'])}**",
             color=0x147D73,
         )
@@ -179,7 +181,7 @@ class MizanBot(discord.Client):
         )
         responses = {r["user_id"]: r["response"] for r in self.store.responses(sid)}
         embed.add_field(
-            name="Attendance" if s["status"]=="held" else "Can you come?",
+            name="Attendance" if s["status"]=="held" else "✅ RSVPs · 4/4 confirmed" if confirmed else "Can you come?",
             value="\n".join(
                 f"{progress.member_line(self.store,sid,m)} · {safe(m['name'])} · 🔥 {progress.personal(self.store,m['user_id'])['current']}"
                 for m in self.store.participants(sid)
@@ -214,6 +216,14 @@ class MizanBot(discord.Client):
         )
         return embed
 
+    def card_message(self,sid):
+        people=' '.join(f"<@{m['user_id']}>" for m in self.store.participants(sid))
+        if progress.locked(self.store,sid):
+            return f'✅ {people} **Class confirmed — all four agreed.** If plans change, tap **I can’t** below.'
+        if self.store.session(sid)['status']=='scheduled':
+            return f'📚 {people} Can you make this class? Tap your response below.'
+        return f'📚 Class #{sid} · attendance and lesson progress below.'
+
     async def update_card(self, sid, create=False):
         s = self.store.session(sid)
         channel = await self.channel()
@@ -223,15 +233,34 @@ class MizanBot(discord.Client):
         if s["message_id"]:
             try:
                 message = await channel.fetch_message(s["message_id"])
-                await message.edit(embed=self.card(sid), view=view)
+                content=self.card_message(sid)
+                if hasattr(self,'demo_owner'): content='🧪 **TEST ONLY — isolated class**\n'+content
+                await message.edit(content=content,embed=self.card(sid), view=view)
                 return
             except discord.NotFound:
                 pass
         if create:
-            people = ' '.join(f"<@{p['user_id']}>" for p in self.store.participants(sid))
-            message = await channel.send(content=f"📚 {people} Can you make this class? Tap your response below.", embed=self.card(sid), view=view)
+            message = await channel.send(content=self.card_message(sid), embed=self.card(sid), view=view)
             with self.store.db:
                 self.store.db.execute("UPDATE sessions SET message_id=? WHERE id=?", (message.id, sid))
+
+    async def confirmed_card(self,sid,pid):
+        """Bring the complete confirmed invitation back to the bottom of the conversation."""
+        key=f'auto-move:{pid}'
+        if self.store.notice_sent(key): return
+        session=self.store.session(sid)
+        channel=await self.channel()
+        if not channel: raise RuleError('Run /setup first.')
+        old_id=session['message_id']
+        # The earlier invitation becomes a snapshot; use the fresh card for any changes.
+        if old_id:
+            try: await (await channel.fetch_message(old_id)).edit(view=None)
+            except discord.NotFound: pass
+        msg=await channel.send(content=self.card_message(sid),
+            embed=self.card(sid),view=ClassView(self,sid,session['revision']))
+        with self.store.transaction():
+            self.store.db.execute('UPDATE sessions SET message_id=? WHERE id=?',(msg.id,sid))
+            self.store.db.execute("INSERT OR IGNORE INTO notices VALUES(?,?)",(key,stamp(self.store.clock())))
 
     def poll_embed(self, pid, slot=None):
         p=self.store.poll(pid)
