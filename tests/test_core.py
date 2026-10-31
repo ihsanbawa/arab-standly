@@ -284,7 +284,8 @@ def test_wuphf_requires_opt_in_quiet_hours_and_cooldown(world, monkeypatch):
     }.items():
         monkeypatch.setenv(k, v)
     w = Wuphf(s)
-    with pytest.raises(RuleError, match="opted"):
+    w.consent(1,False,False,False)
+    with pytest.raises(RuleError, match="stopped"):
         w.reserve(1, "sms", "Class")
     w.consent(1, True, False, False)
     c[0] = parse_local("2026-10-03 05:30", s.tz)
@@ -294,10 +295,10 @@ def test_wuphf_requires_opt_in_quiet_hours_and_cooldown(world, monkeypatch):
     assert w.reserve(1, "sms", "Class") == "+15550000001"
     with pytest.raises(RuleError, match="hour"):
         w.reserve(1, "sms", "Class")
-    with pytest.raises(RuleError, match="opted"):
+    with pytest.raises(RuleError, match="stopped"):
         w.reserve(1, "calls", "Class")
     w.consent(1, False, False, False)
-    with pytest.raises(RuleError, match="opted"):
+    with pytest.raises(RuleError, match="stopped"):
         w.reserve(1, "sms", "Class")
 
 
@@ -311,7 +312,7 @@ def test_discord_adapter_registers_persistent_components(world):
         view = ClassView(bot, sid, 0)
         assert view.is_persistent()
         assert PollView(bot, 1, 3).is_persistent()
-        assert {"setup", "schedule", "poll", "classheld", "mizan", "wuphf", "nudges"} <= {
+        assert {"setup", "schedule", "poll", "classheld", "mizan", "wuphf", "stopnudges"} <= {
             x.name for x in bot.tree.get_commands()
         }
         assert len(bot.card(sid).to_dict()["fields"]) > 0

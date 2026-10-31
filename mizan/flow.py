@@ -37,7 +37,7 @@ async def respond(bot,i,sid,uid,coming,revision):
     else:
         await suggest_menu(bot,i,sid,uid,revision)
         await bot.notify_once(f'decline:{sid}:{revision}:{uid}:{penalty["points"]}',
-            f"<@{uid}> can't make class. **Al-Mizan {penalty['points']}**. They need to suggest another time. The time moves automatically only when all four agree.\n"+roast(sid+uid))
+            f"<@{uid}> can't make class. **Al-Mizan {penalty['points']}**. They need to suggest another time. The time moves automatically only when all four agree.\n"+roast(sid+uid,bot.store,uid))
 
 
 async def suggest_menu(bot,i,sid,uid,revision):

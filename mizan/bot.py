@@ -109,6 +109,7 @@ class MizanBot(discord.Client):
         self.tick_errors = 0
         self.runner = None
         self.test_sessions = {}
+        self.wuphf_lock = asyncio.Lock()
         self.welcome_lock = asyncio.Lock()
         self.report_lock = asyncio.Lock()
         self.move_lock = asyncio.Lock()
@@ -315,6 +316,10 @@ class MizanBot(discord.Client):
     async def setup_hook(self):
         self.http_client = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20))
         self.add_view(ui.Panel(self))
+        from .escalation import Acknowledge,recover_interrupted
+        recover_interrupted(self.store)
+        for job in self.store.rows("SELECT id,message_id FROM wuphf_jobs WHERE source='manual' AND state IN ('waiting_sms','waiting_call') AND message_id IS NOT NULL"):
+            self.add_view(Acknowledge(self,job['id']),message_id=job['message_id'])
         from .reports import PublicReportView
         for row in self.store.rows("SELECT key,value FROM settings WHERE key LIKE 'public_mizan:%'"):
             state=json.loads(row["value"])
@@ -447,6 +452,9 @@ class MizanBot(discord.Client):
                                 self.store.mark_notice(key)
                             except discord.HTTPException:
                                 await self.notify_once(key, f"<@{p['user_id']}> Class #{sid}: {NUDGE}")
+                        if self.store.notice_sent(key):
+                            from .escalation import enqueue_auto
+                            enqueue_auto(self,s,p['user_id'])
                 conflicts = [uid for uid, r in responses.items() if r in {"unavailable", "change"}]
                 if conflicts:
                     await self.notify_once(
@@ -460,6 +468,8 @@ class MizanBot(discord.Client):
                     f"reminder:{sid}:{rev}:{label}",
                     f"📚 {'Class starts within an hour' if label == 'soon' else 'Class within 24 hours'}: #{sid}, {when(s['start_at'])}\n📍 {safe(s['location'])} · {safe(s['topic'])}\nPreparation: {safe(s['prep']) or 'Bring all three books.'}",
                 )
+        from .escalation import process
+        await process(self)
         # Ask the TA after each class, including held classes still missing a recap.
         for s in self.store.rows("SELECT * FROM sessions WHERE status IN ('scheduled','held')"):
             if now < datetime.fromisoformat(s['confirmation_due']):
@@ -700,7 +710,7 @@ def register_commands(bot):
         if responsible and not excused:
             await bot.notify_once(
                 f"cancel-roast:{class_id}:{responsible.id}",
-                f"<@{responsible.id}> **−2 · Confirmed class disruption**\n" + roast(0),
+                f"<@{responsible.id}> **−2 · Confirmed class disruption**\n" + roast(0,store,responsible.id),
             )
         await interaction.followup.send("Recorded. Open /poll to find a replacement.", ephemeral=True)
 
@@ -725,7 +735,7 @@ def register_commands(bot):
         if status == "absent":
             await bot.notify_once(
                 f"roast:{class_id}:{person.id}",
-                f"<@{person.id}> **−2 · Unexcused absence**\n" + roast(class_id + person.id),
+                f"<@{person.id}> **−2 · Unexcused absence**\n" + roast(class_id + person.id,store,person.id),
             )
 
     @tree.command(description="Confirm class happened; accepted RSVPs count as present unless corrected")
@@ -798,50 +808,30 @@ def register_commands(bot):
         await interaction.response.send_message(
             "**Class status**\n"
             + ("\n".join(lines) or "No open classes.")
-            + f"\nRoster: {len(store.roster())}\nBeeminder: {'enabled' if bot.bee.configured() else 'not activated'}\nWUPHF: {'configured; opt-in required' if os.getenv('TWILIO_ACCOUNT_SID') else 'not configured'}\nSchedule: Saturday after Fajr congregation, IACC Plano. Weekly invitations use the official IACC timetable, plus an adjustable after-prayer allowance. Use /standly for buttons.",
+            + f"\nRoster: {len(store.roster())}\nBeeminder: {'enabled' if bot.bee.configured() else 'not activated'}\nWUPHF: {'configured; automatic RSVP escalation' if os.getenv('TWILIO_ACCOUNT_SID') else 'not configured'}\nSchedule: Saturday after Fajr congregation, IACC Plano. Weekly invitations use the official IACC timetable, plus an adjustable after-prayer allowance. Use /standly for buttons.",
             ephemeral=True,
         )
 
-    @tree.command(description="Privately choose SMS/call nudges and whether Fajr-time nudges are allowed")
-    async def nudges(
-        interaction: discord.Interaction, sms: bool | None = None, calls: bool | None = None, allow_fajr: bool | None = None
-    ):
+    @tree.command(description="Create a Discord, text, then call WUPHF for a mentioned server member")
+    async def wuphf(interaction:discord.Interaction,person:discord.Member|None=None):
         bot.check_guild(interaction)
-        if sms is None and calls is None and allow_fajr is None:
-            return await ui.route(bot, interaction, 'nudges')
-        current = store.get(f'nudges:{interaction.user.id}', {})
-        sms = current.get('sms',False) if sms is None else sms
-        calls = current.get('calls',False) if calls is None else calls
-        allow_fajr = current.get('early',False) if allow_fajr is None else allow_fajr
-        bot.wuphf.consent(interaction.user.id, sms, calls, allow_fajr)
-        await interaction.response.send_message(
-            f"Your preferences: SMS {sms}, calls {calls}, Fajr/quiet-hours nudges {allow_fajr}. Use /nudges with both false to stop. Your number must be added privately in Railway; never post it in the channel.",
-            ephemeral=True,
-        )
+        if person is None:return await ui.route(bot,interaction,'wuphf')
+        if person.bot:raise RuleError('The duck does not telephone other robots.')
+        from .escalation import create_manual
+        await create_manual(bot,interaction,person.id)
 
-    @tree.command(description="TA: send an opted-in member an SMS or voice WUPHF (one per hour)")
-    async def wuphf(
-        interaction: discord.Interaction, person: discord.Member | None = None, method: Literal["sms", "calls"] = "sms"
-    ):
-        bot.require_ta(interaction)
-        if person is None:
-            return await ui.route(bot, interaction, 'wuphf')
-        upcoming = store.rows(
-            "SELECT * FROM sessions WHERE status='scheduled' AND start_at>? ORDER BY start_at LIMIT 1",
-            (stamp(store.clock() - timedelta(hours=2)),),
-        )
-        if not upcoming:
-            raise RuleError("Schedule a class before sending a WUPHF.")
-        s = upcoming[0]
-        local = (
-            datetime.fromisoformat(s["start_at"])
-            .astimezone(ZoneInfo(store.tz))
-            .strftime("%a %b %d at %I:%M %p %Z")
-        )
-        message = f"Arabic class {local}, {s['location']}. Please check Discord and confirm your plans."
-        await interaction.response.defer(ephemeral=True)
-        result = await bot.wuphf.send(bot.http_client, person.id, method, message)
-        await interaction.followup.send(result, ephemeral=True)
+    @tree.command(description="Stop all texts and phone calls to you, including queued WUPHFs")
+    async def stopnudges(interaction:discord.Interaction):
+        bot.check_guild(interaction)
+        store.set(f'nudges:{interaction.user.id}',{'sms':False,'calls':False,'early':False})
+        with store.db:store.db.execute("UPDATE wuphf_jobs SET state='stopped' WHERE user_id=? AND state IN ('waiting_sms','waiting_call','sending_sms','sending_call')",(interaction.user.id,))
+        await interaction.response.send_message('📵 Texts and calls stopped, including pending WUPHFs. Discord class reminders still work. Use /resumenudges to resume phone nudges.',ephemeral=True)
+
+    @tree.command(description="Resume group-approved texts and calls to you, with normal quiet hours")
+    async def resumenudges(interaction:discord.Interaction):
+        bot.check_guild(interaction)
+        store.set(f'nudges:{interaction.user.id}',{'sms':True,'calls':True,'early':False})
+        await interaction.response.send_message('📣 Phone nudges resumed. Quiet hours are 9 PM–8 AM Dallas time. Previously stopped WUPHFs stay stopped.',ephemeral=True)
 
     @tree.command(description="TA: read-only validation of the group Beeminder goals; never changes pledges")
     async def beeminder(interaction: discord.Interaction):

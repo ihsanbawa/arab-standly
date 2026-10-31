@@ -113,6 +113,8 @@ class AdvancedControls(Menu):
         self.button('Play the other members',rsvp)
         async def votes(i): await simulated_votes(demo,i)
         self.button('Play poll votes',votes)
+        async def escalation(i): await rehearse_wuphf(demo,i)
+        self.button('Test automatic WUPHF',escalation)
         async def clock(i): await clock_menu(demo,i)
         self.button('Move test clock',clock)
         async def weekly(i):
@@ -331,3 +333,38 @@ async def offer_new_round(demo,i,sid,uid,revision):
     async def home(j): await open_test(demo.root,j)
     view.button('Test home',home)
     await send(i,'🧪 No time worked for all four. This round is closed; a fresh suggestion starts the next vote automatically. No extra points were deducted for rejecting a poll option.',view)
+
+
+async def rehearse_wuphf(demo,i):
+    demo.check_guild(i)
+    view=Menu(demo)
+    async def prepare(j):
+        demo.check_guild(j)
+        session=demo.store.one("SELECT * FROM sessions WHERE status='scheduled' ORDER BY start_at LIMIT 1")
+        if not session:raise RuleError('Run the midweek RSVP first.')
+        sid=session['id'];uid=2
+        demo.test_clock=datetime.fromisoformat(session['start_at'])-timedelta(hours=22)
+        with demo.store.db:
+            demo.store.db.execute('DELETE FROM rsvps WHERE session_id=? AND revision=? AND user_id=?',(sid,session['revision'],uid))
+            demo.store.db.execute("DELETE FROM wuphf_jobs WHERE source='auto' AND session_id=? AND user_id=?",(sid,uid))
+        await j.response.defer(ephemeral=True)
+        await demo.tick()
+        await send(j,'🧪 Test member 2 has not RSVPed. Discord nudge sent; SMS is queued for two hours later.',view)
+    async def advance(j):
+        demo.check_guild(j);demo.test_clock+=timedelta(hours=2)
+        await j.response.defer(ephemeral=True);await demo.tick()
+        jobs=demo.store.rows('SELECT user_id,state FROM wuphf_jobs ORDER BY id')
+        await send(j,'🧪 Two hours later:\n'+('\n'.join(f"Member {x['user_id']}: {x['state']}" for x in jobs) or 'No queued WUPHFs. Start the missing RSVP test first.'),view)
+    async def answer(j):
+        demo.check_guild(j)
+        session=demo.store.one("SELECT * FROM sessions WHERE status='scheduled' ORDER BY start_at LIMIT 1")
+        if not session:raise RuleError('Run the midweek RSVP first.')
+        demo.store.answer(session['id'],2,True,session['revision'])
+        await j.response.defer(ephemeral=True);await demo.tick()
+        await send(j,'🧪 Test member 2 RSVPed. Their remaining automatic phone steps are cancelled.',view)
+    async def home(j):await send(j,'🧪 Weekly rehearsal',TestControls(demo.root,demo))
+    view.button('Start missing-RSVP test',prepare)
+    view.button('Advance 2 hours',advance)
+    view.button('RSVP as member 2',answer)
+    view.button('Test home',home)
+    await send(i,'🧪 **Automatic WUPHF rehearsal**\nStart with a missing RSVP, then advance twice: simulated text, simulated call. Or RSVP between the two to cancel the call. All phone requests stay mocked.',view)

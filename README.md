@@ -1,10 +1,10 @@
 # Shaykh Standly · ⚖️ Al-Mīzān
 
-A Discord bot for a four-person **in-person** Arabic class. Coordinates Saturday classes after Fajr congregation at **IACC, Plano**, collects commitments, reschedules with polls, keeps monthly scores, and offers opt-in WUPHF phone nudges.
+A Discord bot for a four-person **in-person** Arabic class. Coordinates Saturday classes after Fajr congregation at **IACC, Plano**, collects commitments, reschedules with polls, keeps monthly scores, and offers group-authorised WUPHF phone nudges.
 
 ## Included
 
-- A persistent button panel: schedule, RSVP, class controls, scores, links, roster, private nudge preferences and TA settings. Every slash command works with no required arguments; structured menus guide any remaining choices.
+- A persistent button panel: schedule, RSVP, class controls, scores, links, roster, WUPHF for any server member and TA settings. Every slash command works with no required arguments; structured menus guide any remaining choices.
 - Automatic Wednesday 6 PM (Dallas time) RSVP invitations for Saturday, once the four-person roster is registered.
 - Exactly two RSVP buttons: **I can come / I can’t**. Declines require a replacement suggestion, automatically open or extend a group availability poll, and apply one Al-Mizan deduction.
 - After-class TA recap prompt; completed lesson, next lesson and preparation carry into the following invitation.
@@ -22,7 +22,7 @@ A Discord bot for a four-person **in-person** Arabic class. Coordinates Saturday
 - Shared minimum of two classes per calendar month, at-risk alerts, unresolved-makeup reminders.
 - Private record export, restricted TA commands, audit trail, persistent SQLite storage.
 - Beeminder **group** monthly-compliance adapter, disabled until configured. See [BEEMINDER.md](BEEMINDER.md).
-- WUPHF SMS/voice nudges, participant opt-in, Fajr quiet-hours choice, cooldown and daily limit.
+- Automatic Discord → SMS → call RSVP escalation and member-triggered `/wuphf @person`; group-authorised defaults, personal stop/resume, quiet hours, cooldown and daily limits.
 
 The book-based learning assistant, automated grading, and Quizlet completion tracking are **not included** in this first version. The two supplied Quizlet links are included as resources.
 
@@ -61,7 +61,7 @@ After unanimous rescheduling, the bot posts the full class invitation at the bot
 7. Confirming the recap records the held class and individual attendance points once. A partial-group meeting is recorded but contributes zero toward the group’s two-class target. The next Wednesday’s card includes **Where we left off**, the next lesson, preparation, and practice links. If next week was manually announced early, saving the recap refreshes its lesson details too. Older recaps cannot override a newer lesson handoff.
 8. A class with no recap prompts the TA again on following days after 9 AM. A class that did not happen uses **Class didn’t happen** and a replacement poll, without earning held-class credit.
 
-Financially audited months retain their existing protections. Individual scores and the group’s two-held-classes monthly commitment remain separate. Beeminder and WUPHF still require their private configuration and participant opt-ins.
+Financially audited months retain their existing protections. Individual scores and the group’s two-held-classes monthly commitment remain separate. Beeminder and WUPHF still require their private configuration. Phone nudges use the group’s agreed permission and honour individual stop controls.
 
 ### Rehearse the whole week alone
 
@@ -73,9 +73,9 @@ Open **#shaykh-debug → Start weekly rehearsal**, or `/testmode` inside that pr
 4. **Jump after class** runs the actual post-class prompt. Record any attendance exceptions, then fill in the recap and next lesson.
 5. **Next week’s announcement** runs the next Wednesday and shows the carried lesson details, streaks and monthly danger status.
 
-**Streaks & danger tests** opens optional tools for clock jumps, poll-voter simulation, private nudge settings and the mock group-commitment preview. Its streak example resets the private test session and creates two successful sample months; its month-end button runs the real danger checks. **Reset test session** starts over.
+**Streaks & danger tests** opens optional tools for clock jumps, poll-voter simulation, WUPHF rehearsal tools and the mock group-commitment preview. Its streak example resets the private test session and creates two successful sample months; its month-end button runs the real danger checks. **Reset test session** starts over.
 
-Each TA gets separate in-memory records. Test messages are private, marked TEST ONLY, and suppress mentions. Live members, records, SMS/calls and Beeminder writes are untouched. WUPHF delivery is mocked while keeping the consent, quiet-hour and frequency checks. Test records disappear on reset or deployment. Test errors stay inside test controls rather than directing the user to live `/status`.
+Each TA gets separate in-memory records. Test messages are private, marked TEST ONLY, and suppress mentions. Live members, records, SMS/calls and Beeminder writes are untouched. WUPHF delivery is mocked while keeping stop, quiet-hour and frequency checks. Test records disappear on reset or deployment. Test errors stay inside test controls rather than directing the user to live `/status`.
 
 ### Streaks, danger and attendance display
 
@@ -98,7 +98,7 @@ A new verified timetable must be loaded before 2027. The bot alerts the TA and r
 
 ### Commands
 
-Everyone: `/standly`, `/nextclass`, `/rsvp`, `/report`, `/mizan`, `/resources`, `/status`, `/nudges`, `/help`.
+Everyone: `/standly`, `/nextclass`, `/rsvp`, `/report`, `/mizan`, `/resources`, `/status`, `/stopnudges`, `/resumenudges`, `/help`.
 
 TA/server manager: `/member`, `/schedule`, `/poll`, `/confirm_slot`, `/cancel`, `/attendance`, `/classheld`, `/reopen`, `/waive`, `/wuphf`, `/beeminder`, `/export`.
 
@@ -108,9 +108,15 @@ Hiatus changes future rosters. Existing classes retain a snapshot; mark those ab
 
 Set `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, and `TWILIO_PHONE_NUMBER` privately in Railway. Add one variable per recipient phone in E.164 format; map Discord IDs to variable names in `WUPHF_CONTACTS_JSON`.
 
-Recipients tap **My nudges** (or open `/nudges` without arguments) and toggle SMS, calls and Fajr-hours independently. **Turn all off** disables every method. Advanced command flags change only the explicitly supplied preference; opening the menu never changes consent.
+Phone nudges use the group’s agreed permission by default for privately configured recipients. No **My nudges** menu or opt-in step is required. `/stopnudges` stops all phone nudges to the requesting member and cancels pending jobs. `/resumenudges` resumes future jobs, retaining 9 PM–8 AM Dallas quiet hours. Existing explicit stop preferences are respected.
 
-TA uses **TA settings → Send WUPHF**, picks a person and method, then confirms. Advanced `/wuphf` flags are still supported. Uses the next class's actual time and location. WUPHF is manual in v1; normal Discord reminders are automatic. Limits: one attempt per recipient per hour, three per local day. Quiet hours 21:00–08:00 unless the recipient explicitly opts into Fajr-time nudges. Timeout outcomes are not automatically retried, avoiding duplicate calls.
+**Automatic unanswered RSVP escalation:** once the RSVP deadline is reached, send the normal Discord DM/fallback mention. Queue SMS two hours after that nudge, then one call two hours after the actual SMS, only if no RSVP has been recorded. Any RSVP—including unavailable—stops escalation. A changed revision, cancellation, removed participant, hiatus, or class starting also stops it. Each class/revision/person gets one automatic sequence.
+
+**Member-triggered WUPHF:** anyone in the configured Discord server can use `/wuphf @person` or **WUPHF someone**; no TA role or scheduled class is needed. The target must have a privately configured number. Post one public mention with an **I’m here** button, queue SMS immediately, then one call an hour after the actual SMS unless acknowledged. Only the recipient can acknowledge the job. One active sequence per recipient; manual jobs expire after 24 hours.
+
+All phone sends share a one-hour recipient cooldown, three-attempt local daily limit and quiet hours. Queues wait for permissible hours/capacity. Jobs and timestamps survive deployment. A provider timeout/error is terminal and surfaces for review; a restart during a provider request does not retry or advance to calls. There is no repeat-dial loop.
+
+**Test mode:** Streaks & danger tests → advanced tools → **Test automatic WUPHF** rehearses Discord, text, call and cancellation with a fake clock and mocked phone provider. No real number is contacted.
 
 Twilio may require sender registration/verification and verified destinations on trial accounts. SMS STOP handling is provided by Twilio; recipients can also disable nudges in Discord. A successful request means Twilio accepted it, not confirmed delivery. No private numbers are displayed in the channel or stored in class exports.
 
@@ -141,3 +147,7 @@ A single **public Al-Mizan board** in the configured class channel shows the mon
 With **Server Members Intent** enabled in Discord Developer Portal and `WELCOME_ON_JOIN=true`, each human member receives one private DM explaining the Arabic greeting, Saturday/Fajr class, RSVP and unanimous rescheduling, Al-Mizan, attendance, resources and optional phone nudges. Existing members receive it once on first enabled startup. Delivery markers persist across restarts and rejoining, and bots/other guilds are ignored. If Discord blocks DMs, no public welcome is substituted; the member can use **Welcome / how it works** or `/welcome` for a private copy. Welcome does not register someone in the class roster or opt them into WUPHF.
 
 `CLASS_CHANNEL_ID` can move the live class destination to #general. The bot preserves scores/rosters/audit history and recreates live controls there once. Archive the old channel in Discord without deleting its history; private rehearsals remain in #shaykh-debug.
+
+### Shaykh Standly’s voice
+
+A playful, stern Arabic teacher: practical reminders, dry humour, and roasts about excuses, snoozing and missing RSVPs. The curated 24-line Arabic collection includes English spoiler translations and vocabulary notes. Each member gets a persistent rotation through the collection before a line repeats. The Arabic welcome explains the rules with the same voice; roasts never replace scheduling information or a clear next action.

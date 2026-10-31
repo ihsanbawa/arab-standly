@@ -145,16 +145,16 @@ def test_stale_controls_cannot_change_revised_class(state):
     asyncio.run(run())
 
 
-def test_preferences_preserve_other_explicit_choices(state):
+def test_stop_and_resume_replace_the_old_preferences_flow(state):
     async def run():
         s,c=state;four(s);bot=MizanBot(s)
         bot.wuphf.consent(1,True,False,True)
-        await bot.tree.get_command('nudges').callback(interaction(),calls=True)
-        assert s.get('nudges:1')==dict(sms=True,calls=True,early=True)
-        i=interaction();await ui.nudge_preferences(bot,i)
-        view=i.response.send_message.call_args.kwargs['view']
-        await view.children[0].callback(interaction())
-        assert s.get('nudges:1')==dict(sms=False,calls=True,early=True)
+        await bot.tree.get_command('resumenudges').callback(interaction())
+        assert s.get('nudges:1')==dict(sms=True,calls=True,early=False)
+        await bot.tree.get_command('stopnudges').callback(interaction())
+        assert s.get('nudges:1')==dict(sms=False,calls=False,early=False)
+        assert bot.tree.get_command('nudges') is None
+        assert 'My nudges' not in [b.label for b in ui.Panel(bot).children]
         await bot.close()
     asyncio.run(run())
 

@@ -1,4 +1,4 @@
-"""Opt-in SMS/voice nudges. Contacts stay in private environment variables."""
+"""Group-authorised SMS/voice nudges. Contacts stay in private environment variables."""
 
 import json
 import os
@@ -31,15 +31,18 @@ class Wuphf:
             raise RuleError("Twilio is not configured.")
         return phone
 
-    def reserve(self, uid, mode, reason):
-        prefs = self.store.get(f"nudges:{uid}", {})
+    def preferences(self,uid):
+        return self.store.get(f"nudges:{uid}", {"sms":True,"calls":True,"early":False})
+
+    def check(self, uid, mode):
+        prefs = self.preferences(uid)
         if mode not in {"sms", "calls"} or not prefs.get(mode):
-            raise RuleError("This person has not opted into that nudge method.")
-        if not self.store.one("SELECT 1 FROM members WHERE user_id=? AND active=1", (uid,)):
-            raise RuleError("This member is on hiatus.")
+            raise RuleError("This person has stopped that nudge method.")
+        member=self.store.one("SELECT active FROM members WHERE user_id=?",(uid,))
+        if member and not member["active"]: raise RuleError("This member is on hiatus.")
         local = self.store.clock().astimezone(ZoneInfo(self.store.tz))
         if (local.hour < 8 or local.hour >= 21) and not prefs.get("early"):
-            raise RuleError("Quiet hours: 21:00–08:00. Recipient can explicitly allow Fajr-time nudges.")
+            raise RuleError("Quiet hours: 21:00–08:00. Queued phone nudges wait until morning.")
         phone = self.phone(uid)
         recent = self.store.get(f"nudge_last:{uid}")
         if recent and self.store.clock() - datetime.fromisoformat(recent) < timedelta(minutes=60):
@@ -49,6 +52,13 @@ class Wuphf:
         count = self.store.get(daykey, 0)
         if count >= 3:
             raise RuleError("Daily limit reached: three nudges per recipient.")
+        return phone
+
+    def reserve(self,uid,mode,reason):
+        phone=self.check(uid,mode)
+        local_date=self.store.clock().astimezone(ZoneInfo(self.store.tz)).strftime("%Y-%m-%d")
+        daykey=f"nudge_count:{uid}:{local_date}"
+        count=self.store.get(daykey,0)
         # Reserve before the HTTP request. Never retry an ambiguous timeout automatically.
         with self.store.transaction():
             self.store.db.execute(

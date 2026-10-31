@@ -108,6 +108,12 @@ CREATE TABLE IF NOT EXISTS poll_no(
 CREATE TABLE IF NOT EXISTS poll_cards(
  poll_id INTEGER NOT NULL REFERENCES polls(id),slot INTEGER NOT NULL,message_id INTEGER NOT NULL,
  PRIMARY KEY(poll_id,slot));
+CREATE TABLE IF NOT EXISTS wuphf_jobs(
+ id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,actor INTEGER NOT NULL,
+ source TEXT NOT NULL,session_id INTEGER,revision INTEGER,state TEXT NOT NULL DEFAULT 'waiting_sms',
+ created_at TEXT NOT NULL,sms_due TEXT NOT NULL,call_due TEXT,call_delay INTEGER NOT NULL,
+ sms_sent TEXT,call_sent TEXT,message_id INTEGER,reason TEXT NOT NULL DEFAULT '');
+CREATE UNIQUE INDEX IF NOT EXISTS auto_wuphf_unique ON wuphf_jobs(session_id,revision,user_id) WHERE source='auto';
 CREATE TABLE IF NOT EXISTS notices(key TEXT PRIMARY KEY,sent_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS audit(
  id INTEGER PRIMARY KEY AUTOINCREMENT,actor INTEGER NOT NULL,action TEXT NOT NULL,

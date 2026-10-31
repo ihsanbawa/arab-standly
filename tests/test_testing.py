@@ -82,7 +82,8 @@ def test_test_wuphf_reuses_consent_quiet_hours_and_cooldown_without_http(root):
     async def run():
         bot=MizanBot(root);i=interaction();await open_test(bot,i);demo=bot.test_sessions[100]
         client=SimpleNamespace(post=AsyncMock(side_effect=AssertionError('No external request')))
-        with pytest.raises(RuleError,match='opted'):
+        demo.wuphf.consent(100,False,False,False)
+        with pytest.raises(RuleError,match='stopped'):
             await demo.wuphf.send(client,100,'sms','Test class')
         demo.wuphf.consent(100,True,False,False)
         result=await demo.wuphf.send(client,100,'sms','Test class')
@@ -196,5 +197,27 @@ def test_test_errors_offer_test_controls_without_live_status(root):
         assert 'Test mode' in text
         view=j.response.send_message.call_args.kwargs['view']
         assert any(b.label=='Reset test session' for b in view.children)
+        await bot.close()
+    asyncio.run(run())
+
+
+def test_automatic_wuphf_rehearsal_runs_both_stages_without_external_delivery(root):
+    from mizan.testing import rehearse_wuphf
+    async def run():
+        bot=MizanBot(root);i=interaction();await open_test(bot,i);demo=bot.test_sessions[100]
+        demo.store.set('weekly_invites',True);sid=ensure_weekly(demo.store);demo.store.set('weekly_invites',False)
+        await demo.update_card(sid,create=True)
+        menu=interaction();await rehearse_wuphf(demo,menu)
+        view=menu.response.send_message.call_args.kwargs['view']
+        await next(b for b in view.children if b.label=='Start missing-RSVP test').callback(interaction())
+        assert demo.store.rows('SELECT * FROM wuphf_jobs')
+        advance=next(b for b in view.children if b.label=='Advance 2 hours')
+        await advance.callback(interaction())
+        sms=demo.store.rows("SELECT * FROM audit WHERE action='test_nudge'")
+        assert len(sms)==4
+        await advance.callback(interaction())
+        assert len(demo.store.rows("SELECT * FROM audit WHERE action='test_nudge'"))==8
+        assert all(j['state']=='done' for j in demo.store.rows('SELECT * FROM wuphf_jobs'))
+        assert not root.rows('SELECT * FROM wuphf_jobs')
         await bot.close()
     asyncio.run(run())

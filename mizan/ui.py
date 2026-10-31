@@ -97,7 +97,7 @@ class Panel(Menu):
         super().__init__(bot, persistent=True)
         for title, action in [('Next class / RSVP','nextclass'), ('Schedule class','schedule'),
                               ('Class controls','manage'), ('Al-Mizan','mizan'),
-                              ('Practice links','resources'), ('My nudges','nudges'),
+                              ('Practice links','resources'), ('WUPHF someone','wuphf'),
                               ('Class roster','member'), ('Class status','status'), ('TA settings','settings'), ('Welcome / how it works','welcome')]:
             async def clicked(i, a=action):
                 await route(bot, i, a)
@@ -375,34 +375,19 @@ async def roster_menu(bot, interaction, active=True):
     await send(interaction,'**Class roster**\n'+('\n'.join(safe(p['name']) for p in bot.store.roster()) or 'No members yet.')+'\nChoose up to four people at once. Wednesday 6 PM invitations begin automatically when all four are on the roster.',view)
 
 
-async def nudge_preferences(bot,interaction):
-    prefs=bot.store.get(f'nudges:{interaction.user.id}',{'sms':False,'calls':False,'early':False})
-    view=Menu(bot)
-    for key,title in [('sms','SMS'),('calls','Phone calls'),('early','Fajr / quiet hours')]:
-        async def toggle(i,k=key):
-            current=bot.store.get(f'nudges:{i.user.id}',{'sms':False,'calls':False,'early':False})
-            current[k]=not current.get(k,False)
-            bot.wuphf.consent(i.user.id,current.get('sms',False),current.get('calls',False),current.get('early',False))
-            await nudge_preferences(bot,i)
-        view.button(f"{title}: {'ON' if prefs.get(key) else 'OFF'}",toggle)
-    async def stop(i):
-        bot.wuphf.consent(i.user.id,False,False,False)
-        await nudge_preferences(bot,i)
-    view.button('Turn all off',stop,style=discord.ButtonStyle.danger)
-    await send(interaction,'**Your private nudge preferences**\nTap to toggle. Quiet hours are 9 PM–8 AM unless you explicitly allow Fajr-time nudges. A number must be configured privately; never post it here.',view)
-
-
 async def wuphf_menu(bot,interaction):
-    bot.require_ta(interaction)
-    async def selected(i,p):
-        view=Menu(bot)
-        for title,method in [('Send SMS','sms'),('Place phone call','calls')]:
-            async def clicked(j,m=method):
-                async def apply(k): await invoke(bot,k,'wuphf',person=p,method=m)
-                await confirm(bot,j,f"Send a {'text message' if m=='sms' else 'phone call'} to **{safe(p.display_name)}** about the next class? Their opt-in, quiet hours and frequency limits still apply.",apply)
-            view.button(title,clicked)
-        await send(i,'Choose how to nudge '+safe(p.display_name)+'.',view)
-    await choose_person(bot,interaction,None,selected,title='Who needs a nudge?')
+    bot.check_guild(interaction)
+    view=Menu(bot)
+    picker=discord.ui.UserSelect(placeholder='Who needs a WUPHF?',min_values=1,max_values=1)
+    async def chosen(i):
+        bot.check_guild(i)
+        person=picker.values[0]
+        if person.bot: raise RuleError('The duck does not telephone other robots.')
+        from .escalation import create_manual
+        await create_manual(bot,i,person.id)
+    picker.callback=chosen
+    view.add_item(picker)
+    await send(interaction,'📣 **WUPHF someone**\nPick a server member. They’ll get a Discord ping, then a text now and one call an hour later if they do not acknowledge it. Their phone must be configured privately. Quiet hours and shared limits apply. /stopnudges stops phone nudges to yourself.',view)
 
 
 async def settings_menu(bot,interaction):
@@ -446,7 +431,6 @@ async def route(bot,interaction,action,**kwargs):
         return await choose_class(bot,interaction,action,kwargs.get('class_id'))
     if action=='confirm_slot': return await choose_poll(bot,interaction,pid=kwargs.get('poll_id'))
     if action=='member': return await roster_menu(bot,interaction)
-    if action=='nudges': return await nudge_preferences(bot,interaction)
     if action=='wuphf': return await wuphf_menu(bot,interaction)
     if action=='settings': return await settings_menu(bot,interaction)
     if action in {'help','standly'}: return await send(interaction,'**Shaykh Standly**\nUse the buttons. You can also open any command without filling in arguments.',Panel(bot))
