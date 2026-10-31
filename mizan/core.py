@@ -324,7 +324,7 @@ class Store:
         p=self.one("SELECT id FROM polls WHERE session_id=? AND revision=? AND status='open' AND deadline>? ORDER BY id DESC LIMIT 1",(sid,revision,stamp(self.clock())))
         options=self.poll(p['id'])['options'] if p else []
         if stamp(proposed) not in options:
-            if len(options)>=5: raise RuleError('This round has five alternatives. Answer each proposed time; if none works for everyone, a fresh round will open.')
+            if len(options)>=3: raise RuleError('This round already has three alternatives. Save your availability for these; if none works for everyone, a fresh round will open.')
             options.append(stamp(proposed))
         due=min(self.clock()+timedelta(hours=24),min(datetime.fromisoformat(x) for x in options)-timedelta(minutes=1))
         with self.transaction():

@@ -237,7 +237,7 @@ class MizanBot(discord.Client):
         p=self.store.poll(pid)
         people=self.store.participants(p['session_id'])
         embed=discord.Embed(title=f"📅 Reschedule · Class #{p['session_id']}",color=0xE0A526,
-            description="Answer each proposed time below. **All four must agree** before class moves. Your original class stays in place until then.\n"+f"Closes {when(p['deadline'])}")
+            description="Tap **Update my availability**, select every workable time, then save. **All four must agree** before class moves. The original class stays until then.\n"+f"Closes {when(p['deadline'])}")
         for n in range(len(p['options'])) if slot is None else [slot]:
             answers=[(m,self.store.poll_answer(pid,m['user_id'],n)) for m in people]
             count=sum(a=='yes' for _,a in answers)
@@ -256,7 +256,8 @@ class MizanBot(discord.Client):
         channel=await self.channel()
         if not channel: raise RuleError('Run /setup first.')
         active=p['status']=='open' and self.store.clock()<datetime.fromisoformat(p['deadline'])
-        summary_view=SuggestionReminder(self,p['session_id'],p['revision']) if p['status'] in ('open','no_agreement') else None
+        from .availability import SharedPollView
+        summary_view=SharedPollView(self,pid) if active else SuggestionReminder(self,p['session_id'],p['revision']) if p['status']=='no_agreement' else None
         if p['message_id']:
             try:
                 await (await channel.fetch_message(p['message_id'])).edit(embed=self.poll_embed(pid),view=summary_view)
@@ -264,19 +265,15 @@ class MizanBot(discord.Client):
                 p['message_id']=None
         if not p['message_id'] and create:
             people=' '.join(f"<@{m['user_id']}>" for m in self.store.participants(p['session_id']))
-            msg=await channel.send(content=f'📅 {people} **Rescheduling: answer each proposed time below.**',embed=self.poll_embed(pid),view=summary_view)
+            msg=await channel.send(content=f'📅 {people} **Rescheduling: choose every time you can attend.**',embed=self.poll_embed(pid),view=summary_view)
             with self.store.db: self.store.db.execute('UPDATE polls SET message_id=? WHERE id=?',(msg.id,pid))
-        for n in range(len(p['options'])):
-            view=PollView(self,pid,n) if active else None
-            row=self.store.one('SELECT message_id FROM poll_cards WHERE poll_id=? AND slot=?',(pid,n))
-            if row:
-                try:
-                    await (await channel.fetch_message(row['message_id'])).edit(embed=self.poll_embed(pid,n),view=view)
-                    continue
-                except discord.NotFound: pass
-            if create:
-                msg=await channel.send(embed=self.poll_embed(pid,n),view=view)
-                with self.store.db: self.store.db.execute('INSERT OR REPLACE INTO poll_cards VALUES(?,?,?)',(pid,n,msg.id))
+        # Retire older separate option cards without deleting messages or their history.
+        for row in self.store.rows('SELECT * FROM poll_cards WHERE poll_id=?',(pid,)):
+            try:
+                await (await channel.fetch_message(row['message_id'])).edit(content='📅 Use the shared rescheduling card above to update availability.',embed=None,view=None)
+            except discord.NotFound: pass
+            with self.store.db:
+                self.store.db.execute('DELETE FROM poll_cards WHERE poll_id=? AND slot=?',(pid,row['slot']))
 
     async def setup_hook(self):
         self.http_client = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20))
@@ -290,10 +287,9 @@ class MizanBot(discord.Client):
             self.add_view(ui.ConflictView(self, s["id"], s["revision"]))
             self.add_view(SuggestionReminder(self, s["id"], s["revision"]))
             self.add_view(Recap(self, s["id"], s["revision"]))
-        for p in self.store.rows("SELECT c.* FROM poll_cards c JOIN polls p ON p.id=c.poll_id WHERE p.status='open'"):
-            self.add_view(PollView(self,p['poll_id'],p['slot']),message_id=p['message_id'])
+        from .availability import SharedPollView
         for p in self.store.rows("SELECT * FROM polls WHERE status IN ('open','no_agreement') AND message_id IS NOT NULL"):
-            self.add_view(SuggestionReminder(self,p['session_id'],p['revision']),message_id=p['message_id'])
+            self.add_view(SharedPollView(self,p['id']) if p['status']=='open' else SuggestionReminder(self,p['session_id'],p['revision']),message_id=p['message_id'])
         for s in self.store.rows("SELECT * FROM sessions WHERE status='held'"):
             self.add_view(Recap(self, s['id'], s['revision']))
         guild = os.environ.get("DISCORD_GUILD_ID")
@@ -443,7 +439,7 @@ class MizanBot(discord.Client):
                     await self.notify_once(
                         f"pollnudge:{pid}",
                         " ".join(missing)
-                        + f" please answer each proposed time in reschedule #{pid}: I can come / I can’t.",
+                        + f" please use Update my availability on reschedule #{pid}, select every workable time, and save.",
                     )
         if len(self.store.roster())==4:
             d=progress.danger(self.store)
@@ -729,10 +725,8 @@ def register_commands(bot):
         if month is None:
             return await ui.route(bot, interaction, 'mizan')
         month = month or month_of(store.clock(), store.tz)
-        board = "\n".join(f"{safe(r['name'])}: **{r['points']:+d}**" for r in store.standings(month))
-        await interaction.response.send_message(
-            f"⚖️ **المِيزَان · {month}**\n{board or 'Add members first.'}\n📚 Group classes held: **{store.monthly_count(month)}/2**\nAttendance +1 · confirmed move after accepting −1 · last-minute/no-show −2 · excuses 0. Monthly fresh start; history preserved."
-        )
+        from .reports import show_report
+        await show_report(bot,interaction,month)
 
     @tree.command(description="Show class preparation and Quizlet links")
     async def resources(interaction: discord.Interaction):

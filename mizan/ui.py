@@ -341,11 +341,8 @@ async def choose_poll(bot,interaction,sid=None,pid=None):
         p=bot.store.one("SELECT id FROM polls WHERE status='open'"+(' AND session_id=?' if sid else '')+' ORDER BY id DESC LIMIT 1',(sid,) if sid else ())
         if not p: raise RuleError('No open poll. A participant who cannot attend can suggest a replacement time.')
         pid=p['id']
-    from .bot import PollView
-    p=bot.store.poll(pid)
-    await interaction.response.defer(ephemeral=True)
-    for n in range(len(p['options'])):
-        await interaction.followup.send(embed=bot.poll_embed(pid,n),view=PollView(bot,pid,n),ephemeral=True)
+    from .availability import SharedPollView
+    await interaction.response.send_message(embed=bot.poll_embed(pid),view=SharedPollView(bot,pid),ephemeral=True)
 
 
 async def roster_menu(bot, interaction, active=True):
@@ -454,17 +451,6 @@ async def route(bot,interaction,action,**kwargs):
     if action=='settings': return await settings_menu(bot,interaction)
     if action in {'help','standly'}: return await send(interaction,'**Shaykh Standly**\nUse the buttons. You can also open any command without filling in arguments.',Panel(bot))
     if action=='mizan':
-        view=Menu(bot)
-        now=bot.store.clock().astimezone(ZoneInfo(bot.store.tz))
-        months=[]
-        for _ in range(12):
-            months.append(now.strftime('%Y-%m'))
-            now=now.replace(day=1)-timedelta(days=1)
-        async def selected(i,v): await invoke(bot,i,'mizan',month=v)
-        view.select('Choose month',[discord.SelectOption(label=m,value=m) for m in months],selected)
-        board=bot.store.standings(months[0])
-        from . import progress
-        streak=progress.group_streak(bot.store)
-        await send(interaction,'⚖️ **المِيزَان · '+months[0]+'**\n'+('\n'.join(f"{safe(p['name'])}: **{p['points']:+d}** · 🔥 {progress.personal(bot.store,p['user_id'])['current']} attended" for p in board) or 'Add your four class members first.')+f"\n🔥 Group: {streak['current']} successful months (best {streak['best']}).\n"+progress.summary(bot.store),view)
-        return
+        from .reports import show_report
+        return await show_report(bot,interaction)
     return await invoke(bot,interaction,action)

@@ -236,41 +236,28 @@ async def simulated_votes(demo,interaction):
     await send(interaction,'🧪 Test the visible reschedule cards, playing any of the four members.',view)
 
 
-async def simulated_reschedule_card(demo,interaction,pid,uid,slot):
+async def simulated_reschedule_card(demo,interaction,pid,uid,slot=0):
     demo.check_guild(interaction)
     p=demo.store.poll(pid)
     view=Menu(demo)
-    for available,title in [(True,'I can come'),(False,"I can't")]:
-        async def answered(i,yes=available):
-            demo.check_guild(i)
-            demo.store.answer_poll(pid,uid,slot,yes)
-            await i.response.defer(ephemeral=True)
-            from .consensus import update
-            await update(demo,pid)
-            current=demo.store.poll(pid)
-            if current['status']=='confirmed':
-                return await send(i,'✅ All four agreed. Class moved automatically; all four are RSVPed.',TestControls(demo.root,demo))
-            if not yes:
-                from .flow import suggest_menu
-                return await suggest_menu(demo,i,p['session_id'],uid,p['revision'])
-            await simulated_reschedule_card(demo,i,pid,uid,slot)
-        view.button(title,answered,style=discord.ButtonStyle.success if available else discord.ButtonStyle.danger)
-    async def member(i,v): await simulated_reschedule_card(demo,i,pid,int(v),slot)
-    async def option(i,v): await simulated_reschedule_card(demo,i,pid,uid,int(v))
+    async def edit(i):
+        from .availability import open_ballot
+        await open_ballot(demo,i,pid,uid)
+    view.button('Update my availability',edit,style=discord.ButtonStyle.primary)
+    async def member(i,v): await simulated_reschedule_card(demo,i,pid,int(v))
     members=demo.store.participants(p['session_id'])
     view.select('Play another member',[discord.SelectOption(label=m['name'][:100],value=str(m['user_id']),default=m['user_id']==uid) for m in members],member)
-    if len(p['options'])>1:
-        view.select('View another proposed time',[discord.SelectOption(label=label(d),value=str(n),default=n==slot) for n,d in enumerate(p['options'])],option)
+    async def suggest(i):
+        from .flow import suggest_menu
+        await suggest_menu(demo,i,p['session_id'],uid,p['revision'])
+    view.button('Suggest another time',suggest)
     async def home(i): await send(i,'🧪 Weekly rehearsal',TestControls(demo.root,demo))
     view.button('Test home',home)
     name=next(m['name'] for m in members if m['user_id']==uid)
-    kwargs=dict(content=f'🧪 **Answering as {safe(name)}**',embed=demo.poll_embed(pid,slot),view=view)
-    if interaction.response.is_done():
-        await interaction.edit_original_response(**kwargs)
-    elif interaction.message and interaction.message.flags.ephemeral:
-        await interaction.response.edit_message(**kwargs)
-    else:
-        await interaction.response.send_message(**kwargs,ephemeral=True)
+    kwargs=dict(content=f'🧪 **Answering as {safe(name)}**',embed=demo.poll_embed(pid),view=view)
+    if interaction.response.is_done(): await interaction.edit_original_response(**kwargs)
+    elif interaction.message and interaction.message.flags.ephemeral: await interaction.response.edit_message(**kwargs)
+    else: await interaction.response.send_message(**kwargs,ephemeral=True)
 
 
 async def clock_menu(demo,interaction):
