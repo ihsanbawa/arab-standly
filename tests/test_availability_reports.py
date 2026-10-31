@@ -109,6 +109,7 @@ def test_reports_reconcile_ledger_history_corrections_and_reset(world):
     assert all(m['points']==0 for m in report_data(s,'2026-11')['members'])
     assert len(next(m for m in report_data(s,'2026-10')['members'] if m['user_id']==1)['entries'])==2
     assert 'Next fresh start' in report_embed(s,'2026-10').footer.text
+    assert '<t:' not in report_embed(s,'2026-10').footer.text
     assert int(report_data(s,'2026-10')['end'].timestamp())==int(parse_local('2026-11-01 00:00',s.tz).timestamp())
 
 

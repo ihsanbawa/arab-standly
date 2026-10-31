@@ -49,7 +49,7 @@ def report_embed(store,month,uid=None,page=0):
             embed.add_field(name=f"{'🟢' if entry['points']>=0 else '🔴'} {entry['points']:+d} · {safe(reason[:140])}",value=f"{date}"+(f" · Class #{entry['session_id']}" if session else ''),inline=False)
         if not member['entries']: embed.add_field(name='No point changes this month',value='Balance starts at zero. Points appear after class attendance or a scheduling disruption.')
         embed.add_field(name='Point history',value=f'Page {page+1}/{pages} · {len(member["entries"])} recorded changes. Corrections and waivers are reflected in this balance.',inline=False)
-    reset=f"Next fresh start: <t:{int(data['end'].timestamp())}:D>." if month==current else 'Each month starts at zero; earlier balances stay in history.'
+    reset=f"Next fresh start: {label(data['end'])}. History preserved." if month==current else 'Each month starts at zero; earlier balances stay in history.'
     embed.add_field(name='How the scales work',value='Attendance **+1** · decline/confirmed disruption **−1** · last-minute decline/no-show **−2** · excused absence **0**. Strongest disruption deduction per person/class; no stacking. Replacement availability votes **0**.',inline=False)
     embed.set_footer(text=reset+' Al-Mizan points are separate from Beeminder; no money is charged by this report.')
     return embed
