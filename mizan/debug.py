@@ -55,7 +55,7 @@ def get_demo(root,interaction):
 def route_commands(bot):
     # Parsed command arguments are preserved; only the backing class store changes.
     from functools import wraps
-    for command in bot.tree.get_commands():
+    for command in bot.actions.values():
         if command.name=='testmode': continue
         original=command.callback
         def wrap(callback,name):
@@ -63,7 +63,7 @@ def route_commands(bot):
             async def dispatch(interaction,*args,**kwargs):
                 if bot.store.get('debug_channel_id') and getattr(interaction,'channel_id',None)==bot.store.get('debug_channel_id'):
                     demo=get_demo(bot,interaction)
-                    return await demo.tree.get_command(name).callback(interaction,*args,**kwargs)
+                    return await demo.actions[name].callback(interaction,*args,**kwargs)
                 return await callback(interaction,*args,**kwargs)
             return dispatch
         command._callback=wrap(original,command.name)

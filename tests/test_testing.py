@@ -49,7 +49,7 @@ def test_test_mode_uses_separate_scores_and_never_sends_real_announcements(root)
         assert 'TEST ONLY' in sent.args[0]
         for p in demo.store.roster(): demo.store.rsvp(sid,p['user_id'],'coming')
         demo.test_clock=datetime.fromisoformat(demo.store.session(sid)['confirmation_due'])+timedelta(minutes=1)
-        await demo.tree.get_command('classheld').callback(i,class_id=sid)
+        await demo.actions['classheld'].callback(i,class_id=sid)
         assert demo.store.monthly_count('2026-11')==1
         assert all(p['points']==1 for p in demo.store.standings('2026-11'))
         assert not root.rows('SELECT * FROM sessions')

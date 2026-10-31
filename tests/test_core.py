@@ -312,7 +312,7 @@ def test_discord_adapter_registers_persistent_components(world):
         view = ClassView(bot, sid, 0)
         assert view.is_persistent()
         assert PollView(bot, 1, 3).is_persistent()
-        assert {"setup", "schedule", "poll", "classheld", "mizan", "wuphf", "stopnudges"} <= {
+        assert {"standly", "wuphf", "stopnudges", "resumenudges", "testmode"} == {
             x.name for x in bot.tree.get_commands()
         }
         assert len(bot.card(sid).to_dict()["fields"]) > 0

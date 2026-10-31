@@ -57,7 +57,7 @@ class ReportModal(discord.ui.Modal, title="Report a class problem"):
             ephemeral=True,
         )
         await self.bot.notify(
-            f"⚠️ Class #{self.sid}: <@{interaction.user.id}> reports: {safe(self.reason)}\nTA: **Still meeting?** Keep the class, or use /cancel then /poll. Assign responsibility only after checking what happened."
+            f"⚠️ Class #{self.sid}: <@{interaction.user.id}> reports: {safe(self.reason)}\nTA: **Still meeting?** Keep the class, or open Class controls → Class didn’t happen, then Reschedule / poll. Assign responsibility only after checking what happened."
         )
 
     async def on_error(self, interaction, error):
@@ -115,6 +115,11 @@ class MizanBot(discord.Client):
         self.move_lock = asyncio.Lock()
         self.poll_render_lock = asyncio.Lock()
         register_commands(self)
+        # Keep actions callable from guided menus without cluttering Discord's slash picker.
+        self.actions={command.name:command for command in self.tree.get_commands()}
+        visible={'standly','wuphf','stopnudges','resumenudges','testmode'}
+        for name in self.actions:
+            if name not in visible:self.tree.remove_command(name)
         if not hasattr(self,'demo_owner'):
             from .debug import route_commands
             route_commands(self)
@@ -141,7 +146,7 @@ class MizanBot(discord.Client):
         message = (
             str(error)
             if isinstance(error, RuleError)
-            else "Something failed. Your action may have been saved; use /status before retrying."
+            else "Something failed. Your action may have been saved; open More → TA settings → Status before retrying."
         )
         if not isinstance(error, RuleError):
             log.error("Interaction failed: %s", type(error).__name__)
@@ -237,7 +242,7 @@ class MizanBot(discord.Client):
         s = self.store.session(sid)
         channel = await self.channel()
         if not channel:
-            raise RuleError("Run /setup in the announcements channel first.")
+            raise RuleError("Open More → TA settings → Use this channel first.")
         view = ClassView(self, sid, s["revision"]) if s["status"] == "scheduled" else None
         if s["message_id"]:
             try:
@@ -259,7 +264,7 @@ class MizanBot(discord.Client):
         if self.store.notice_sent(key): return
         session=self.store.session(sid)
         channel=await self.channel()
-        if not channel: raise RuleError('Run /setup first.')
+        if not channel: raise RuleError('Open More → TA settings → Use this channel first.')
         old_id=session['message_id']
         # The earlier invitation becomes a snapshot; use the fresh card for any changes.
         if old_id:
@@ -292,7 +297,7 @@ class MizanBot(discord.Client):
     async def _render_poll(self, pid, create=False):
         p=self.store.poll(pid)
         channel=await self.channel()
-        if not channel: raise RuleError('Run /setup first.')
+        if not channel: raise RuleError('Open More → TA settings → Use this channel first.')
         active=p['status']=='open' and self.store.clock()<datetime.fromisoformat(p['deadline'])
         from .availability import SharedPollView
         summary_view=SharedPollView(self,pid) if active else SuggestionReminder(self,p['session_id'],p['revision']) if p['status']=='no_agreement' else None
@@ -591,7 +596,7 @@ def register_commands(bot):
             return await ui.route(bot, interaction, 'member')
         store.member(person.id, person.display_name, active)
         await interaction.response.send_message(
-            f"{safe(person.display_name)}: {'active for future classes' if active else 'hiatus for future classes'}. Existing session rosters stay intact; use /attendance excused for those.",
+            f"{safe(person.display_name)}: {'active for future classes' if active else 'hiatus for future classes'}. Existing session rosters stay intact; use Attendance exception → Excused for those.",
             ephemeral=True,
         )
 
@@ -624,7 +629,7 @@ def register_commands(bot):
         sessions = store.rows("SELECT * FROM sessions WHERE status='scheduled' ORDER BY start_at")
         if not sessions:
             await interaction.response.send_message(
-                "No scheduled class. A TA can use /schedule; use /status to see unresolved makeups.",
+                "No scheduled class. The TA can use More → Schedule / make-up class, or TA settings → Status for unresolved makeups.",
                 ephemeral=True,
             )
             return
@@ -657,7 +662,7 @@ def register_commands(bot):
             "Reported. No penalty assigned to the reporter.", ephemeral=True
         )
         await bot.notify(
-            f"⚠️ Class #{class_id}: <@{interaction.user.id}> reports {safe(reason)}.\nTA: are the rest still meeting? If yes, keep class. If no, /cancel then /poll."
+            f"⚠️ Class #{class_id}: <@{interaction.user.id}> reports {safe(reason)}.\nTA: are the rest still meeting? If yes, keep class. If no, use Class controls → Class didn’t happen, then Reschedule / poll."
         )
 
     @tree.command(description="Open a replacement poll; times separated by semicolons, Dallas time")
@@ -705,14 +710,14 @@ def register_commands(bot):
         await interaction.response.defer(ephemeral=True)
         await bot.update_card(class_id)
         await bot.notify(
-            f"Class #{class_id} **needs a replacement**. {safe(reason)}\nTA: /poll with alternatives. No class credit was recorded."
+            f"Class #{class_id} **needs a replacement**. {safe(reason)}\nTA: open Class controls → Reschedule / poll to offer alternatives. No class credit was recorded."
         )
         if responsible and not excused:
             await bot.notify_once(
                 f"cancel-roast:{class_id}:{responsible.id}",
                 f"<@{responsible.id}> **−2 · Confirmed class disruption**\n" + roast(0,store,responsible.id),
             )
-        await interaction.followup.send("Recorded. Open /poll to find a replacement.", ephemeral=True)
+        await interaction.followup.send("Recorded. Open Class controls → Reschedule / poll to find a replacement.", ephemeral=True)
 
     @tree.command(
         description="Record an exception to trusted attendance; partial attendance earns 0 pending review"
@@ -775,7 +780,7 @@ def register_commands(bot):
             return await ui.route(bot, interaction, 'waive', class_id=class_id)
         store.waive(class_id, person.id, interaction.user.id, reason)
         await interaction.response.send_message(
-            "Penalty waived. For an absence, also mark /attendance excused.", ephemeral=True
+            "Penalty waived. For an absence, also use Attendance exception → Excused.", ephemeral=True
         )
 
     @tree.command(description="Show Al-Mizan standings for this month or a previous YYYY-MM")

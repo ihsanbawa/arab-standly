@@ -279,7 +279,7 @@ class Store:
         if s["status"] != "scheduled" or datetime.fromisoformat(s["start_at"]) <= self.clock():
             raise RuleError("RSVPs are closed for this class. Report a disruption instead.")
         if revision is not None and revision != s["revision"]:
-            raise RuleError("That card is outdated. Use /nextclass for the current class.")
+            raise RuleError("That card is outdated. Open Next class for the current invitation.")
         if response not in RSVPS:
             raise RuleError("Unknown RSVP response.")
         with self.db:
@@ -556,7 +556,7 @@ class Store:
     def cancel(self, sid, actor, reason, responsible=None, excused=False):
         s = self.session(sid)
         if s["status"] == "held":
-            raise RuleError("Use /reopen before changing a held class.")
+            raise RuleError("Open More → Class controls → Reopen confirmation before changing a held class.")
         self.ensure_unsealed(s)
         with self.transaction():
             if responsible and not excused:
@@ -629,7 +629,7 @@ class Store:
         ]
         if missing:
             raise RuleError(
-                "Not everyone accepted. Set present/absent/excused/partial for unresolved members with /attendance first."
+                "Not everyone accepted. Set present/absent/excused/partial for unresolved members using Attendance exception first."
             )
         with self.transaction():
             for p in self.participants(sid):

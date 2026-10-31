@@ -304,7 +304,7 @@ async def progress_tests(root,demo,i):
         await demo.tick()
         await send(j,'🧪 End-of-month check:\n'+progress.summary(demo.store),TestControls(root,demo))
     view.button('Jump to month-end danger',end_month)
-    async def board(j): await demo.tree.get_command('mizan').callback(j)
+    async def board(j): await demo.actions['mizan'].callback(j)
     view.button('Show streaks and Al-Mizan',board)
     async def example(j):
         from .core import parse_local

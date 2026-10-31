@@ -226,7 +226,7 @@ def test_normal_schedule_command_in_debug_cannot_change_live_records(world):
         bot=MizanBot(s)
         msg=SimpleNamespace(id=88,edit=AsyncMock())
         i=SimpleNamespace(guild_id=123,channel_id=777,user=SimpleNamespace(id=1,display_name='TA',roles=[]),permissions=SimpleNamespace(manage_guild=True),response=SimpleNamespace(defer=AsyncMock(),send_message=AsyncMock(),is_done=lambda:True),followup=SimpleNamespace(send=AsyncMock(return_value=msg)))
-        await bot.tree.get_command('schedule').callback(i,start='2026-10-03 07:00',topic='Debug command rehearsal')
+        await bot.actions['schedule'].callback(i,start='2026-10-03 07:00',topic='Debug command rehearsal')
         assert not s.rows('SELECT * FROM sessions')
         assert len(bot.test_sessions[1].store.rows('SELECT * FROM sessions'))==1
         assert i.followup.send.call_args_list[0].kwargs['ephemeral'] is True

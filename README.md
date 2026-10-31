@@ -4,7 +4,7 @@ A Discord bot for a four-person **in-person** Arabic class. Coordinates Saturday
 
 ## Included
 
-- A persistent button panel: schedule, RSVP, class controls, scores, links, roster, WUPHF for any server member and TA settings. Every slash command works with no required arguments; structured menus guide any remaining choices.
+- A persistent button panel: schedule, RSVP, class controls, scores, links, roster, WUPHF for any server member and TA settings. Five essential slash commands; structured menus guide any remaining choices.
 - Automatic Wednesday 6 PM (Dallas time) RSVP invitations for Saturday, once the four-person roster is registered.
 - Exactly two RSVP buttons: **I can come / I can’t**. Declines require a replacement suggestion, automatically open or extend a group availability poll, and apply one Al-Mizan deduction.
 - After-class TA recap prompt; completed lesson, next lesson and preparation carry into the following invitation.
@@ -46,11 +46,11 @@ cp .env.example .env
 4. Give it View Channels, Send Messages, Embed Links, Read Message History, and Attach Files **only in the class channel**. Administrator and privileged member/message-content intents are unnecessary.
 5. Enable Discord Developer Mode, copy the server ID into `DISCORD_GUILD_ID`, and your user ID into `BOT_OWNER_ID`.
 6. Run `/setup` in the announcements channel (no arguments needed; an optional TA role is still supported). The first setup requires Manage Server or configured owner access.
-7. Invite all four participants (teachers included), then use **Class roster** to select them together. Weekly invitations start automatically once all four are on the roster.
+7. Invite all four participants (teachers included), then use **More → Class roster** to select them together. Weekly invitations start automatically once all four are on the roster.
 
 ## Everyday flow
 
-1. Use the permanent **Shaykh Standly** panel or `/standly`. Invite the four people, then select them with **Class roster**.
+1. Use the permanent **Shaykh Standly** panel or `/standly`. Invite the four people, then select them with **More → Class roster**.
 2. Every **Wednesday at 6 PM America/Chicago**, the bot announces Saturday’s class at IACC after Fajr. If setup happens later in the week it catches up. It uses verified IACC iqamah + an adjustable 15 minutes, for a 60-minute class.
 3. The class card has exactly **I can come / I can’t**. No separate late/change/report controls on that invitation. TA actions remain on the main panel and post-class prompt.
 4. **I can’t** records −1 (−2 within 24 hours), immediately opens a replacement-time picker, and posts a curated Arabic roast. Select all workable suggested dates and tap **Suggest selected times**, or enter up to three custom Dallas date/times. The selected batch is saved atomically and posted as one shared poll. The bot automatically posts an availability poll and marks the proposer available. Subsequent suggestions extend the same open poll without erasing existing votes, up to three alternatives. Closing the picker leaves a visible pending suggestion; the bot nudges them after 12 hours. No one can propose on behalf of another member outside Test mode.
@@ -96,11 +96,11 @@ Timezone is `America/Chicago`, including the November clock change. New classes 
 
 A new verified timetable must be loaded before 2027. The bot alerts the TA and refuses to reuse old-year times. A TA can still enter a verified custom time through the scheduling form. Wednesday 6 PM invitations require exactly four active roster members and can be paused in TA settings. It creates one regular invitation for each Saturday's week, with persistent deduplication, and retries an unposted invitation after a restart without creating a second class. Scores and financial credit are never inferred from creating an invitation.
 
-### Commands
+### Commands and controls
 
-Everyone: `/standly`, `/nextclass`, `/rsvp`, `/report`, `/mizan`, `/resources`, `/status`, `/stopnudges`, `/resumenudges`, `/help`.
+The public slash picker contains only **/standly**, **/wuphf**, **/stopnudges**, **/resumenudges**, and the TA-only **/testmode** (which runs in #shaykh-debug).
 
-TA/server manager: `/member`, `/schedule`, `/poll`, `/confirm_slot`, `/cancel`, `/attendance`, `/classheld`, `/reopen`, `/waive`, `/wuphf`, `/beeminder`, `/export`.
+The main panel has five buttons: **Next class**, **Al-Mizan**, **WUPHF**, **Practice**, and **More**. Members use More for the private welcome and phone stop/resume. The TA also sees schedule/make-up, class controls/attendance, roster and settings there. Former setup, status, poll, attendance, recap, waiver, finance, export, resource and help commands remain internal menu actions rather than separate slash commands. Permissions still apply to every admin action.
 
 Hiatus changes future rosters. Existing classes retain a snapshot; mark those absences excused explicitly. No automatic late-arrival deductions. Partial attendance earns zero until the TA decides. The class's local **start date** determines its calendar month.
 

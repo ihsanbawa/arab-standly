@@ -84,7 +84,7 @@ class ConflictView(Menu):
 
 
 async def invoke(bot,interaction,name,**kwargs):
-    await bot.tree.get_command(name).callback(interaction,**kwargs)
+    await bot.actions[name].callback(interaction,**kwargs)
 
 
 def guarded(bot,sid,revision):
@@ -95,13 +95,24 @@ def guarded(bot,sid,revision):
 class Panel(Menu):
     def __init__(self, bot):
         super().__init__(bot, persistent=True)
-        for title, action in [('Next class / RSVP','nextclass'), ('Schedule class','schedule'),
-                              ('Class controls','manage'), ('Al-Mizan','mizan'),
-                              ('Practice links','resources'), ('WUPHF someone','wuphf'),
-                              ('Class roster','member'), ('Class status','status'), ('TA settings','settings'), ('Welcome / how it works','welcome')]:
+        for title, action in [('Next class','nextclass'),('Al-Mizan','mizan'),('WUPHF','wuphf'),('Practice','resources'),('More','more')]:
             async def clicked(i, a=action):
                 await route(bot, i, a)
             self.button(title, clicked, custom_id=f'standly:home:{action}')
+
+
+async def more_menu(bot,interaction):
+    view=Menu(bot)
+    for title,action in [('Welcome / how it works','welcome'),('Stop my phone nudges','stopnudges'),('Resume my phone nudges','resumenudges')]:
+        async def clicked(i,a=action):await invoke(bot,i,a)
+        view.button(title,clicked)
+    try:bot.require_ta(interaction)
+    except RuleError:pass
+    else:
+        for title,action in [('Schedule / make-up class','schedule'),('Class controls / attendance','manage'),('Class roster','member'),('TA settings','settings')]:
+            async def clicked(i,a=action):await route(bot,i,a)
+            view.button(title,clicked)
+    await send(interaction,'🦆 **More from the Shaykh**\nThe useful extras. The excuses department remains closed.',view)
 
 
 async def ensure_panel(bot):
@@ -426,6 +437,7 @@ async def route(bot,interaction,action,**kwargs):
     if action=='test':
         from .testing import open_test
         return await open_test(bot,interaction)
+    if action=='more': return await more_menu(bot,interaction)
     if action=='schedule': return await schedule_preview(bot,interaction)
     if action in {'rsvp','nextclass','report','manage','poll','cancel','attendance','classheld','reopen','waive'}:
         return await choose_class(bot,interaction,action,kwargs.get('class_id'))

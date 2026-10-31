@@ -89,7 +89,7 @@ def test_all_slash_commands_have_no_required_arguments(state):
         bot=MizanBot(state[0])
         for command in bot.tree.get_commands():
             assert all(not p.required for p in command.parameters), command.name
-        assert len(ui.Panel(bot).children)==10
+        assert len(ui.Panel(bot).children)==5
         assert ui.Panel(bot).is_persistent()
         await bot.close()
     asyncio.run(run())
@@ -178,5 +178,23 @@ def test_panel_and_automatic_announcement_recover_and_do_not_repeat(state):
         assert bot.update_card.call_count==3
         assert len(s.rows('SELECT * FROM sessions'))==1
         assert s.monthly_count('2026-10')==0
+        await bot.close()
+    asyncio.run(run())
+
+
+def test_more_menu_hides_admin_controls_from_members_but_keeps_ta_workflows(state):
+    async def run():
+        bot=MizanBot(state[0])
+        member=interaction(uid=2,ta=False)
+        await ui.more_menu(bot,member)
+        buttons=member.response.send_message.call_args.kwargs['view'].children
+        assert {b.label for b in buttons}=={'Welcome / how it works','Stop my phone nudges','Resume my phone nudges'}
+        teacher=interaction(ta=True)
+        await ui.more_menu(bot,teacher)
+        labels={b.label for b in teacher.response.send_message.call_args.kwargs['view'].children}
+        assert {'Schedule / make-up class','Class controls / attendance','Class roster','TA settings'}<=labels
+        assert bot.tree.get_command('schedule') is None
+        assert 'schedule' in bot.actions
+        assert [b.label for b in ui.Panel(bot).children]==['Next class','Al-Mizan','WUPHF','Practice','More']
         await bot.close()
     asyncio.run(run())
