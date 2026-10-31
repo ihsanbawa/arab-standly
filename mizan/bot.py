@@ -65,63 +65,29 @@ class ReportModal(discord.ui.Modal, title="Report a class problem"):
 
 
 class PollView(discord.ui.View):
-    def __init__(self, bot, pid, count):
+    """Each proposed time has the same two explicit responses as a class RSVP."""
+    def __init__(self, bot, pid, slot):
         super().__init__(timeout=None)
-        for index in range(count):
-            button = discord.ui.Button(
-                label=f"Option {index + 1}",
-                custom_id=f"mizan:poll:{pid}:{index}",
-                style=discord.ButtonStyle.secondary,
-            )
-
-            async def callback(interaction, slot=index):
+        self.bot=bot
+        for available,title,style in [(True,'I can come',discord.ButtonStyle.success),(False,"I can't",discord.ButtonStyle.danger)]:
+            button=discord.ui.Button(label=title,style=style,custom_id=f'mizan:reschedule:{pid}:{slot}:{int(available)}')
+            async def answer(interaction, yes=available):
                 ui.guard_context(bot,interaction)
                 bot.check_guild(interaction)
                 await interaction.response.defer(ephemeral=True)
-                selected = bot.store.vote(pid, interaction.user.id, slot)
+                bot.store.answer_poll(pid,interaction.user.id,slot,yes)
                 await consensus.update(bot,pid)
-                await interaction.followup.send(
-                    "Available ✓" if selected else "Availability removed", ephemeral=True
-                )
-
-            button.callback = callback
+                if yes:
+                    await interaction.followup.send('✅ Coming to this proposed time. Your response is visible on its card.',ephemeral=True)
+                else:
+                    from .flow import suggest_menu
+                    p=bot.store.poll(pid)
+                    await suggest_menu(bot,interaction,p['session_id'],interaction.user.id,p['revision'])
+            button.callback=answer
             self.add_item(button)
-        none = discord.ui.Button(
-            label="None work", custom_id=f"mizan:poll:{pid}:none", style=discord.ButtonStyle.danger
-        )
-
-        async def none_callback(interaction):
-            ui.guard_context(bot,interaction)
-            bot.check_guild(interaction)
-            p = bot.store.poll(pid)
-            bot.store.ensure_participant(p["session_id"], interaction.user.id)
-            if p["status"] != "open" or bot.store.clock() >= datetime.fromisoformat(p["deadline"]):
-                raise RuleError("This poll has closed.")
-            with bot.store.db:
-                bot.store.db.execute(
-                    "DELETE FROM votes WHERE poll_id=? AND user_id=?", (pid, interaction.user.id)
-                )
-                bot.store.db.execute("INSERT INTO votes VALUES(?,?,-1)", (pid, interaction.user.id))
-            await interaction.response.defer(ephemeral=True)
-            await consensus.update(bot,pid)
-            await interaction.followup.send(
-                "Recorded: none work. Suggest a new alternative if the group needs another round.", ephemeral=True
-            )
-
-        none.callback = none_callback
-        self.add_item(none)
-        offer=discord.ui.Button(label='Suggest another time',custom_id=f'mizan:poll-suggest:{pid}')
-        async def suggest_time(interaction):
-            from .flow import suggest_menu
-            bot.check_guild(interaction)
-            p=bot.store.poll(pid)
-            await suggest_menu(bot,interaction,p['session_id'],interaction.user.id,p['revision'])
-        offer.callback=suggest_time
-        self.add_item(offer)
-        self.bot = bot
 
     async def on_error(self, interaction, error, item):
-        await self.bot.respond_error(interaction, error)
+        await self.bot.respond_error(interaction,error)
 
 
 class MizanBot(discord.Client):
@@ -142,6 +108,7 @@ class MizanBot(discord.Client):
         self.runner = None
         self.test_sessions = {}
         self.move_lock = asyncio.Lock()
+        self.poll_render_lock = asyncio.Lock()
         register_commands(self)
         if not hasattr(self,'demo_owner'):
             from .debug import route_commands
@@ -266,50 +233,50 @@ class MizanBot(discord.Client):
             with self.store.db:
                 self.store.db.execute("UPDATE sessions SET message_id=? WHERE id=?", (message.id, sid))
 
-    def poll_embed(self, pid):
-        p = self.store.poll(pid)
-        votes = self.store.rows("SELECT * FROM votes WHERE poll_id=?", (pid,))
-        embed = discord.Embed(
-            title=f"📅 Replacement poll #{pid} · Class #{p['session_id']}",
-            description=f"Select **every** time you can attend. Buttons toggle availability.\nCloses {when(p['deadline'])}\nAll four must agree. The earliest unanimous time locks automatically.",
-            color=0xE0A526,
-        )
-        for index, option in enumerate(p["options"]):
-            users = [v["user_id"] for v in votes if v["slot"] == index]
-            embed.add_field(
-                name=f"Option {index + 1} · {len(users)}/{len(self.store.participants(p['session_id']))} available",
-                value=when(option) + "\n" + (", ".join(f"<@{u}>" for u in users) or "No responses yet"),
-                inline=False,
-            )
-        none = [v["user_id"] for v in votes if v["slot"] == -1]
-        if none:
-            embed.add_field(name="None work", value=", ".join(f"<@{u}>" for u in none), inline=False)
-        embed.set_footer(text=f"{p['status']} · All-four votes become RSVPs for the selected time")
+    def poll_embed(self, pid, slot=None):
+        p=self.store.poll(pid)
+        people=self.store.participants(p['session_id'])
+        embed=discord.Embed(title=f"📅 Reschedule · Class #{p['session_id']}",color=0xE0A526,
+            description="Answer each proposed time below. **All four must agree** before class moves. Your original class stays in place until then.\n"+f"Closes {when(p['deadline'])}")
+        for n in range(len(p['options'])) if slot is None else [slot]:
+            answers=[(m,self.store.poll_answer(pid,m['user_id'],n)) for m in people]
+            count=sum(a=='yes' for _,a in answers)
+            lines=[f"{ {'yes':'✅','no':'❌','waiting':'⏳'}[a]} **{safe(m['name'])}** · { {'yes':'Coming','no':"Can't",'waiting':'Awaiting response'}[a]}" for m,a in answers]
+            embed.add_field(name=f"Proposed time {n+1} · {count}/4 coming",value=when(p['options'][n])+"\n\n"+"\n".join(lines),inline=False)
+        status={'open':'Voting open · First unanimous time locks automatically','confirmed':'✅ Agreed — class moved automatically','no_agreement':'No common time — suggest another time'}.get(p['status'],p['status'])
+        embed.set_footer(text=status+' · Availability votes do not add Al-Mizan deductions')
         return embed
 
     async def update_poll(self, pid, create=False):
-        p = self.store.poll(pid)
-        channel = await self.channel()
-        if not channel:
-            raise RuleError("Run /setup first.")
-        view = (
-            PollView(self, pid, len(p["options"]))
-            if p["status"] == "open" and self.store.clock() < datetime.fromisoformat(p["deadline"])
-            else SuggestionReminder(self,p['session_id'],p['revision']) if p['status']=='no_agreement' else None
-        )
-        if p["message_id"]:
+        async with self.poll_render_lock:
+            await self._render_poll(pid,create)
+
+    async def _render_poll(self, pid, create=False):
+        p=self.store.poll(pid)
+        channel=await self.channel()
+        if not channel: raise RuleError('Run /setup first.')
+        active=p['status']=='open' and self.store.clock()<datetime.fromisoformat(p['deadline'])
+        summary_view=SuggestionReminder(self,p['session_id'],p['revision']) if p['status'] in ('open','no_agreement') else None
+        if p['message_id']:
             try:
-                await (await channel.fetch_message(p["message_id"])).edit(
-                    embed=self.poll_embed(pid), view=view
-                )
-                return
+                await (await channel.fetch_message(p['message_id'])).edit(embed=self.poll_embed(pid),view=summary_view)
             except discord.NotFound:
-                pass
-        if create:
+                p['message_id']=None
+        if not p['message_id'] and create:
             people=' '.join(f"<@{m['user_id']}>" for m in self.store.participants(p['session_id']))
-            msg = await channel.send(content=f"📅 {people} A replacement time was suggested. Can you make it? Vote below.",embed=self.poll_embed(pid), view=view)
-            with self.store.db:
-                self.store.db.execute("UPDATE polls SET message_id=? WHERE id=?", (msg.id, pid))
+            msg=await channel.send(content=f'📅 {people} **Rescheduling: answer each proposed time below.**',embed=self.poll_embed(pid),view=summary_view)
+            with self.store.db: self.store.db.execute('UPDATE polls SET message_id=? WHERE id=?',(msg.id,pid))
+        for n in range(len(p['options'])):
+            view=PollView(self,pid,n) if active else None
+            row=self.store.one('SELECT message_id FROM poll_cards WHERE poll_id=? AND slot=?',(pid,n))
+            if row:
+                try:
+                    await (await channel.fetch_message(row['message_id'])).edit(embed=self.poll_embed(pid,n),view=view)
+                    continue
+                except discord.NotFound: pass
+            if create:
+                msg=await channel.send(embed=self.poll_embed(pid,n),view=view)
+                with self.store.db: self.store.db.execute('INSERT OR REPLACE INTO poll_cards VALUES(?,?,?)',(pid,n,msg.id))
 
     async def setup_hook(self):
         self.http_client = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20))
@@ -323,10 +290,10 @@ class MizanBot(discord.Client):
             self.add_view(ui.ConflictView(self, s["id"], s["revision"]))
             self.add_view(SuggestionReminder(self, s["id"], s["revision"]))
             self.add_view(Recap(self, s["id"], s["revision"]))
-        for p in self.store.rows(
-            "SELECT id,options,message_id FROM polls WHERE status='open' AND message_id IS NOT NULL"
-        ):
-            self.add_view(PollView(self, p["id"], len(json.loads(p["options"]))), message_id=p["message_id"])
+        for p in self.store.rows("SELECT c.* FROM poll_cards c JOIN polls p ON p.id=c.poll_id WHERE p.status='open'"):
+            self.add_view(PollView(self,p['poll_id'],p['slot']),message_id=p['message_id'])
+        for p in self.store.rows("SELECT * FROM polls WHERE status IN ('open','no_agreement') AND message_id IS NOT NULL"):
+            self.add_view(SuggestionReminder(self,p['session_id'],p['revision']),message_id=p['message_id'])
         for s in self.store.rows("SELECT * FROM sessions WHERE status='held'"):
             self.add_view(Recap(self, s['id'], s['revision']))
         guild = os.environ.get("DISCORD_GUILD_ID")
@@ -390,6 +357,9 @@ class MizanBot(discord.Client):
             except discord.NotFound: self.store.set('panel_message_id',None)
         for s in self.store.rows("SELECT * FROM sessions WHERE status='scheduled' AND message_id IS NOT NULL"):
             await self.update_card(s['id'])
+
+        for p in self.store.rows("SELECT id FROM polls WHERE status='open' AND message_id IS NOT NULL"):
+            await self.update_poll(p['id'],create=True)
 
     async def tick(self):
         if not self.store.get("channel_id"):
@@ -466,20 +436,14 @@ class MizanBot(discord.Client):
             if now >= datetime.fromisoformat(p["deadline"]):
                 await consensus.update(self,pid)
             elif now >= datetime.fromisoformat(p["deadline"]) - timedelta(hours=4):
-                responded = {
-                    v["user_id"]
-                    for v in self.store.rows("SELECT DISTINCT user_id FROM votes WHERE poll_id=?", (pid,))
-                }
-                missing = [
-                    f"<@{m['user_id']}>"
-                    for m in self.store.participants(p["session_id"])
-                    if m["user_id"] not in responded
-                ]
+                options=self.store.poll(pid)['options']
+                missing=[f"<@{m['user_id']}>" for m in self.store.participants(p['session_id'])
+                    if any(self.store.poll_answer(pid,m['user_id'],n)=='waiting' for n in range(len(options)))]
                 if missing:
                     await self.notify_once(
                         f"pollnudge:{pid}",
                         " ".join(missing)
-                        + f" please answer replacement poll #{pid}. Select all workable slots or None work.",
+                        + f" please answer each proposed time in reschedule #{pid}: I can come / I can’t.",
                     )
         if len(self.store.roster())==4:
             d=progress.danger(self.store)

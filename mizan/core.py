@@ -102,6 +102,12 @@ CREATE TABLE IF NOT EXISTS polls(
 CREATE TABLE IF NOT EXISTS votes(
  poll_id INTEGER NOT NULL REFERENCES polls(id),user_id INTEGER NOT NULL,slot INTEGER NOT NULL,
  PRIMARY KEY(poll_id,user_id,slot));
+CREATE TABLE IF NOT EXISTS poll_no(
+ poll_id INTEGER NOT NULL REFERENCES polls(id),user_id INTEGER NOT NULL,slot INTEGER NOT NULL,
+ PRIMARY KEY(poll_id,user_id,slot));
+CREATE TABLE IF NOT EXISTS poll_cards(
+ poll_id INTEGER NOT NULL REFERENCES polls(id),slot INTEGER NOT NULL,message_id INTEGER NOT NULL,
+ PRIMARY KEY(poll_id,slot));
 CREATE TABLE IF NOT EXISTS notices(key TEXT PRIMARY KEY,sent_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS audit(
  id INTEGER PRIMARY KEY AUTOINCREMENT,actor INTEGER NOT NULL,action TEXT NOT NULL,
@@ -318,7 +324,7 @@ class Store:
         p=self.one("SELECT id FROM polls WHERE session_id=? AND revision=? AND status='open' AND deadline>? ORDER BY id DESC LIMIT 1",(sid,revision,stamp(self.clock())))
         options=self.poll(p['id'])['options'] if p else []
         if stamp(proposed) not in options:
-            if len(options)>=5: raise RuleError('This round has five alternatives. Mark the ones that work or choose None work to start another round.')
+            if len(options)>=5: raise RuleError('This round has five alternatives. Answer each proposed time; if none works for everyone, a fresh round will open.')
             options.append(stamp(proposed))
         due=min(self.clock()+timedelta(hours=24),min(datetime.fromisoformat(x) for x in options)-timedelta(minutes=1))
         with self.transaction():
@@ -329,6 +335,7 @@ class Store:
                 pid=self.open_poll(sid,options,due,uid)
             self.db.execute("INSERT INTO replacement_requests VALUES(?,?,?,?,'suggested',?) ON CONFLICT(session_id,revision,user_id) DO UPDATE SET proposed_at=excluded.proposed_at,state='suggested',updated_at=excluded.updated_at",(sid,revision,uid,stamp(proposed),stamp(self.clock())))
             self.db.execute('DELETE FROM votes WHERE poll_id=? AND user_id=? AND slot=-1',(pid,uid))
+            self.db.execute('DELETE FROM poll_no WHERE poll_id=? AND user_id=? AND slot=?',(pid,uid,options.index(stamp(proposed))))
             self.db.execute('INSERT OR IGNORE INTO votes VALUES(?,?,?)',(pid,uid,options.index(stamp(proposed))))
             self.log(uid,'replacement_suggested',{'session':sid,'time':stamp(proposed),'poll':pid})
         return pid
@@ -403,6 +410,34 @@ class Store:
                 self.db.execute("DELETE FROM votes WHERE poll_id=? AND user_id=? AND slot=-1", (pid, uid))
                 self.db.execute("INSERT INTO votes VALUES(?,?,?)", (pid, uid, slot))
         return not bool(old)
+
+    def poll_answer(self, pid, uid, slot):
+        if self.one("SELECT 1 FROM votes WHERE poll_id=? AND user_id=? AND slot=?",(pid,uid,slot)):
+            return 'yes'
+        if self.one("SELECT 1 FROM poll_no WHERE poll_id=? AND user_id=? AND slot=?",(pid,uid,slot)):
+            return 'no'
+        # Compatibility with the old all-options rejection.
+        if self.one("SELECT 1 FROM votes WHERE poll_id=? AND user_id=? AND slot=-1",(pid,uid)):
+            return 'no'
+        return 'waiting'
+
+    def answer_poll(self, pid, uid, slot, available):
+        p=self.poll(pid)
+        self.ensure_participant(p['session_id'],uid)
+        if p['status']!='open' or self.session(p['session_id'])['revision']!=p['revision'] or self.clock()>=datetime.fromisoformat(p['deadline']):
+            raise RuleError('This reschedule round has closed or changed.')
+        if not 0<=slot<len(p['options']): raise RuleError('Unknown proposed time.')
+        with self.transaction():
+            # Preserve old None-work answers as explicit per-option responses.
+            if self.one('SELECT 1 FROM votes WHERE poll_id=? AND user_id=? AND slot=-1',(pid,uid)):
+                for n in range(len(p['options'])):
+                    self.db.execute('INSERT OR IGNORE INTO poll_no VALUES(?,?,?)',(pid,uid,n))
+                self.db.execute('DELETE FROM votes WHERE poll_id=? AND user_id=? AND slot=-1',(pid,uid))
+            self.db.execute('DELETE FROM votes WHERE poll_id=? AND user_id=? AND slot=?',(pid,uid,slot))
+            self.db.execute('DELETE FROM poll_no WHERE poll_id=? AND user_id=? AND slot=?',(pid,uid,slot))
+            table='votes' if available else 'poll_no'
+            self.db.execute(f'INSERT INTO {table} VALUES(?,?,?)',(pid,uid,slot))
+        return 'yes' if available else 'no'
 
     def penalty(self, sid, uid, points, reason, actor):
         """One disruption penalty per person/class. The strongest replaces the weaker."""

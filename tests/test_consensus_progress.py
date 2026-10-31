@@ -59,7 +59,8 @@ def test_earliest_unanimous_option_wins_regardless_of_option_order(world):
 
 def test_no_common_time_opens_new_suggestion_round_without_moving(world):
     s,c=world;sid=session(s,c);pid=poll(s,c,sid)
-    for uid in range(1,5):s.vote(pid,uid,uid%2)
+    for uid in range(1,5):
+        for n in range(2): s.answer_poll(pid,uid,n,n==uid%2)
     assert consensus.finish_round(s,pid)
     assert s.poll(pid)['status']=='no_agreement'
     assert len(s.rows("SELECT * FROM replacement_requests WHERE state='pending'"))==4
@@ -239,3 +240,47 @@ def test_stale_live_panels_cannot_mutate_live_store_from_debug(world):
         assert not s.rows('SELECT * FROM ledger')
         await bot.close()
     asyncio.run(run())
+
+
+def test_proposal_responses_are_explicit_visible_and_idempotent(world):
+    s,c=world;sid=session(s,c);pid=poll(s,c,sid)
+    s.answer_poll(pid,1,0,True);s.answer_poll(pid,1,0,True)
+    s.answer_poll(pid,2,0,False)
+    assert [s.poll_answer(pid,u,0) for u in range(1,5)]==['yes','no','waiting','waiting']
+    bot=MizanBot(s)
+    text=bot.poll_embed(pid,0).fields[0].value
+    for name in ['Member 1','Member 2','Member 3','Member 4']: assert name in text
+    for emoji in ['✅','❌','⏳']: assert emoji in text
+    s.answer_poll(pid,2,0,True)
+    for u in [3,4]: s.answer_poll(pid,u,0,True)
+    assert consensus.settle(s,pid)==sid
+    assert progress.locked(s,sid)
+
+
+def test_answering_one_time_does_not_close_other_options(world):
+    s,c=world;sid=session(s,c);pid=poll(s,c,sid)
+    for uid in range(1,5):s.answer_poll(pid,uid,0,False)
+    assert not consensus.finish_round(s,pid)
+    assert s.poll(pid)['status']=='open'
+    for uid in range(1,5):s.answer_poll(pid,uid,1,True)
+    assert consensus.settle(s,pid)==sid
+
+
+def test_per_time_no_persists_and_other_option_is_unanswered(world):
+    s,c=world;sid=session(s,c);pid=poll(s,c,sid)
+    s.answer_poll(pid,1,0,False)
+    path=s.db.execute('PRAGMA database_list').fetchone()[2]
+    other=Store(path,clock=lambda:c[0])
+    assert other.poll_answer(pid,1,0)=='no'
+    assert other.poll_answer(pid,1,1)=='waiting'
+    other.close()
+
+
+def test_reschedule_card_has_only_two_explicit_responses(world):
+    from mizan.bot import PollView
+    s,c=world;sid=session(s,c);pid=poll(s,c,sid)
+    async def check():
+        view=PollView(MizanBot(s),pid,0)
+        assert [b.label for b in view.children]==['I can come',"I can't"]
+        assert view.is_persistent()
+    asyncio.run(check())

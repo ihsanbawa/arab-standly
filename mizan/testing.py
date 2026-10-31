@@ -227,46 +227,50 @@ async def simulated_rsvp(demo, interaction, sid=None, uid=None, notice=''):
 async def simulated_votes(demo,interaction):
     demo.check_guild(interaction)
     polls=demo.store.rows("SELECT * FROM polls WHERE status='open' ORDER BY id DESC LIMIT 25")
-    if not polls: raise RuleError('Open a replacement poll in test class controls first.')
+    if not polls: raise RuleError('Decline a test class and suggest a replacement time first.')
     view=Menu(demo)
     async def poll_selected(i,v):
         p=demo.store.poll(int(v))
-        people=Menu(demo)
-        async def person_selected(j,uid):
-            options=Menu(demo)
-            async def slot_selected(k,slot):
-                demo.check_guild(k)
-                demo.store.vote(p['id'],int(uid),int(slot))
-                await k.response.defer()
-                from .consensus import update
-                await update(demo,p['id'])
-                if demo.store.poll(p['id'])['status']=='confirmed':
-                    return await send(k,'✅ All four agreed. The class moved automatically and the card shows 4/4 coming.',TestControls(demo.root,demo))
-                if demo.store.poll(p['id'])['status']=='no_agreement':
-                    return await offer_new_round(demo,k,p['session_id'],int(uid),p['revision'])
-                await send(k,'🧪 Availability updated. Choose another option to toggle it, or return to choose another member.',options)
-            async def another(k): await simulated_votes(demo,k)
-            options.button('Choose another member',another)
-            async def none(k):
-                from .consensus import update
-                demo.check_guild(k)
-                current=demo.store.poll(p['id'])
-                if current['status']!='open' or demo.store.clock()>=datetime.fromisoformat(current['deadline']): raise RuleError('This round is closed.')
-                with demo.store.db:
-                    demo.store.db.execute('DELETE FROM votes WHERE poll_id=? AND user_id=?',(p['id'],int(uid)))
-                    demo.store.db.execute('INSERT INTO votes VALUES(?,?,-1)',(p['id'],int(uid)))
-                await k.response.defer()
-                await update(demo,p['id'])
-                if demo.store.poll(p['id'])['status']=='no_agreement':
-                    return await offer_new_round(demo,k,p['session_id'],int(uid),p['revision'])
-                await send(k,'🧪 None work recorded. Vote as another member or offer a different time.',options)
-            options.button('None work',none)
-            options.select('Mark an option available',[discord.SelectOption(label=label(d),value=str(n)) for n,d in enumerate(p['options'])],slot_selected)
-            await send(j,'🧪 Toggle every option this member can attend.',options)
-        people.select('Play which member?',[discord.SelectOption(label=m['name'][:100],value=str(m['user_id'])) for m in demo.store.participants(p['session_id'])],person_selected)
-        await send(i,'🧪 Choose a simulated voter.',people)
-    view.select('Which test poll?',[discord.SelectOption(label=f"Poll {p['id']} · class {p['session_id']}",value=str(p['id'])) for p in polls],poll_selected)
-    await send(interaction,'🧪 Vote as each simulated class member.',view)
+        await simulated_reschedule_card(demo,i,p['id'],demo.demo_owner,0)
+    view.select('Which reschedule?',[discord.SelectOption(label=f"Class {p['session_id']} · reschedule {p['id']}",value=str(p['id'])) for p in polls],poll_selected)
+    await send(interaction,'🧪 Test the visible reschedule cards, playing any of the four members.',view)
+
+
+async def simulated_reschedule_card(demo,interaction,pid,uid,slot):
+    demo.check_guild(interaction)
+    p=demo.store.poll(pid)
+    view=Menu(demo)
+    for available,title in [(True,'I can come'),(False,"I can't")]:
+        async def answered(i,yes=available):
+            demo.check_guild(i)
+            demo.store.answer_poll(pid,uid,slot,yes)
+            await i.response.defer(ephemeral=True)
+            from .consensus import update
+            await update(demo,pid)
+            current=demo.store.poll(pid)
+            if current['status']=='confirmed':
+                return await send(i,'✅ All four agreed. Class moved automatically; all four are RSVPed.',TestControls(demo.root,demo))
+            if not yes:
+                from .flow import suggest_menu
+                return await suggest_menu(demo,i,p['session_id'],uid,p['revision'])
+            await simulated_reschedule_card(demo,i,pid,uid,slot)
+        view.button(title,answered,style=discord.ButtonStyle.success if available else discord.ButtonStyle.danger)
+    async def member(i,v): await simulated_reschedule_card(demo,i,pid,int(v),slot)
+    async def option(i,v): await simulated_reschedule_card(demo,i,pid,uid,int(v))
+    members=demo.store.participants(p['session_id'])
+    view.select('Play another member',[discord.SelectOption(label=m['name'][:100],value=str(m['user_id']),default=m['user_id']==uid) for m in members],member)
+    if len(p['options'])>1:
+        view.select('View another proposed time',[discord.SelectOption(label=label(d),value=str(n),default=n==slot) for n,d in enumerate(p['options'])],option)
+    async def home(i): await send(i,'🧪 Weekly rehearsal',TestControls(demo.root,demo))
+    view.button('Test home',home)
+    name=next(m['name'] for m in members if m['user_id']==uid)
+    kwargs=dict(content=f'🧪 **Answering as {safe(name)}**',embed=demo.poll_embed(pid,slot),view=view)
+    if interaction.response.is_done():
+        await interaction.edit_original_response(**kwargs)
+    elif interaction.message and interaction.message.flags.ephemeral:
+        await interaction.response.edit_message(**kwargs)
+    else:
+        await interaction.response.send_message(**kwargs,ephemeral=True)
 
 
 async def clock_menu(demo,interaction):

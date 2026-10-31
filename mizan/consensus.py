@@ -36,8 +36,8 @@ def finish_round(store,pid):
     p=store.poll(pid);s=store.session(p['session_id'])
     if p['status']!='open' or p['revision']!=s['revision']: return False
     ids={m['user_id'] for m in store.participants(s['id'])}
-    voted={v['user_id'] for v in store.rows('SELECT DISTINCT user_id FROM votes WHERE poll_id=?',(pid,))}
-    if store.clock()<datetime.fromisoformat(p['deadline']) and voted!=ids: return False
+    complete=all(store.poll_answer(pid,uid,n)!='waiting' for uid in ids for n in range(len(p['options'])))
+    if store.clock()<datetime.fromisoformat(p['deadline']) and not complete: return False
     if winner(store,pid) is not None: return False
     with store.transaction():
         store.db.execute("UPDATE polls SET status='no_agreement' WHERE id=?",(pid,))

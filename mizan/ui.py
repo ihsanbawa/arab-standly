@@ -343,7 +343,9 @@ async def choose_poll(bot,interaction,sid=None,pid=None):
         pid=p['id']
     from .bot import PollView
     p=bot.store.poll(pid)
-    await interaction.response.send_message(embed=bot.poll_embed(pid),view=PollView(bot,pid,len(p['options'])),ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    for n in range(len(p['options'])):
+        await interaction.followup.send(embed=bot.poll_embed(pid,n),view=PollView(bot,pid,n),ephemeral=True)
 
 
 async def roster_menu(bot, interaction, active=True):
