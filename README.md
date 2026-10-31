@@ -134,4 +134,10 @@ Sources: [Discord interactions](https://discordpy.readthedocs.io/en/stable/inter
 
 ### Al-Mizan report
 
-Tap **Al-Mizan** on the main panel or open `/mizan`. The private monthly overview shows ranked balances, earned and deducted points, actual attended classes, current attendance streaks, the group target and monthly reset. Choose a member for a paginated item-by-item ledger with class dates and reasons, or choose a previous month. Reports use the actual ledger: corrections and waivers replace obsolete point values rather than double counting. Historical months remain available after the fresh start. Points are separate from Beeminder and viewing a report never charges anyone. In #shaykh-debug the same report reads only your simulated records.
+A single **public Al-Mizan board** in the configured class channel shows the monthly leader, all four balances, earned/lost points, personal streaks, group progress, and cumulative scores from the full ledger. **This month / All-time** changes its ranking for everyone. The board refreshes in place when scores change and survives restarts. `/mizan` and the panel link to this shared report rather than sending a separate report per member. **Point history** opens a private drill-down; old months remain available. Corrections and waivers update the real ledger totals. Debug rehearsals remain isolated and private.
+
+### Private Arabic welcome
+
+With **Server Members Intent** enabled in Discord Developer Portal and `WELCOME_ON_JOIN=true`, each human member receives one private DM explaining the Arabic greeting, Saturday/Fajr class, RSVP and unanimous rescheduling, Al-Mizan, attendance, resources and optional phone nudges. Existing members receive it once on first enabled startup. Delivery markers persist across restarts and rejoining, and bots/other guilds are ignored. If Discord blocks DMs, no public welcome is substituted; the member can use **Welcome / how it works** or `/welcome` for a private copy. Welcome does not register someone in the class roster or opt them into WUPHF.
+
+`CLASS_CHANNEL_ID` can move the live class destination to #general. The bot preserves scores/rosters/audit history and recreates live controls there once. Archive the old channel in Discord without deleting its history; private rehearsals remain in #shaykh-debug.

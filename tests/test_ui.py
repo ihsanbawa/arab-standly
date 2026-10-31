@@ -89,7 +89,7 @@ def test_all_slash_commands_have_no_required_arguments(state):
         bot=MizanBot(state[0])
         for command in bot.tree.get_commands():
             assert all(not p.required for p in command.parameters), command.name
-        assert len(ui.Panel(bot).children)==9
+        assert len(ui.Panel(bot).children)==10
         assert ui.Panel(bot).is_persistent()
         await bot.close()
     asyncio.run(run())

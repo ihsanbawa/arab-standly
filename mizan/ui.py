@@ -98,7 +98,7 @@ class Panel(Menu):
         for title, action in [('Next class / RSVP','nextclass'), ('Schedule class','schedule'),
                               ('Class controls','manage'), ('Al-Mizan','mizan'),
                               ('Practice links','resources'), ('My nudges','nudges'),
-                              ('Class roster','member'), ('Class status','status'), ('TA settings','settings')]:
+                              ('Class roster','member'), ('Class status','status'), ('TA settings','settings'), ('Welcome / how it works','welcome')]:
             async def clicked(i, a=action):
                 await route(bot, i, a)
             self.button(title, clicked, custom_id=f'standly:home:{action}')

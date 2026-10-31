@@ -65,14 +65,14 @@ class ReportView(Menu):
             months.append(now.strftime('%Y-%m'))
             now=now.replace(day=1)-timedelta(days=1)
         months=list(dict.fromkeys([month]+months))[:25]
-        async def choose_month(i,v): await show_report(bot,i,v)
+        async def choose_month(i,v): await show_report(bot,i,v,details=True)
         self.select('Choose month',[discord.SelectOption(label=m,value=m,default=m==month) for m in months],choose_month)
         if data['members']:
             async def choose_person(i,v): await show_report(bot,i,month,int(v))
             self.select('See a member’s point history',[discord.SelectOption(label=m['name'][:100],value=str(m['user_id']),default=m['user_id']==uid) for m in data['members'][:25]],choose_person)
         if uid is not None:
             member=next(m for m in data['members'] if m['user_id']==uid)
-            async def back(i): await show_report(bot,i,month)
+            async def back(i): await show_report(bot,i,month,details=True)
             self.button('Monthly overview',back)
             if page>0:
                 async def previous(i): await show_report(bot,i,month,uid,page-1)
@@ -82,9 +82,15 @@ class ReportView(Menu):
                 self.button('More changes',more)
 
 
-async def show_report(bot,interaction,month=None,uid=None,page=0):
+async def show_report(bot,interaction,month=None,uid=None,page=0,details=False):
     bot.check_guild(interaction)
     month=month or month_of(bot.store.clock(),bot.store.tz)
+    if uid is None and not details and not hasattr(bot,'demo_owner'):
+        if not interaction.response.is_done():await interaction.response.defer(ephemeral=True)
+        state=await public_board(bot,month,force=True)
+        url=f"https://discord.com/channels/{interaction.guild_id}/{state['channel']}/{state['message']}"
+        await interaction.followup.send(f'⚖️ [Open the shared Al-Mizan standings]({url})',ephemeral=True)
+        return
     embed=report_embed(bot.store,month,uid,page)
     view=ReportView(bot,month,uid,page)
     kwargs=dict(content=None,embed=embed,view=view)
@@ -94,3 +100,69 @@ async def show_report(bot,interaction,month=None,uid=None,page=0):
         else: await interaction.response.edit_message(**kwargs)
     elif interaction.response.is_done(): await interaction.followup.send(**kwargs,ephemeral=True)
     else: await interaction.response.send_message(**kwargs,ephemeral=True)
+
+
+def standings_embed(store,month,period='month'):
+    data=report_data(store,month)
+    totals={r['user_id']:r['points'] for r in store.rows('SELECT user_id,SUM(points) points FROM ledger GROUP BY user_id')}
+    members=[dict(m,total=totals.get(m['user_id'],0)) for m in data['members']]
+    key='total' if period=='all' else 'points'
+    members.sort(key=lambda m:(-m[key],m['name']))
+    current=month_of(store.clock(),store.tz)
+    embed=discord.Embed(title='⚖️ المِيزَان · AL-MIZAN',description=f'**{month}** · The scales are watching.\n'+('📜 All-time standings' if period=='all' else '🏆 Monthly standings'),color=0xD5AB42)
+    if members:
+        leaders=[m for m in members if m[key]==members[0][key]]
+        if len(leaders)==len(members) and members[0][key]==0:
+            headline='⚖️ A level playing field'
+            lead='Everyone starts at zero. The crown is waiting.'
+        else:
+            headline='👑 All-time leader' if period=='all' else '👑 Month winner' if month<current else '👑 Leading this month'
+            lead=' & '.join(safe(m['name']) for m in leaders)+f" · **{members[0][key]:+d} points**"
+            if len(leaders)>1:lead+=' · tied'
+        embed.add_field(name=headline,value=lead,inline=False)
+    for member in members[:20]:
+        rank=1+sum(m[key]>member[key] for m in members)
+        medal={1:'🥇',2:'🥈',3:'🥉'}.get(rank,f'{rank}.')
+        embed.add_field(name=f"{medal} {safe(member['name'][:80])}",value=f"**This month {member['points']:+d}** · All-time **{member['total']:+d}**\nEarned +{member['earned']} · Lost {('-'+str(member['lost'])) if member['lost'] else '0'} · 🔥 {progress.personal(store,member['user_id'])['current']}",inline=False)
+    if not members:embed.add_field(name='The scales are ready',value='The TA can add the four class members with Class roster.')
+    embed.add_field(name='📚 Together',value=f"**{data['count']}/2** full-group classes this month · {'Target met ✅' if data['count']>=2 else 'Let’s get everyone in the room.'}",inline=False)
+    embed.set_footer(text='Monthly scores reset; all-time scores and streak history stay. · Attendance +1 · Early decline −1 · Last-minute/no-show −2')
+    return embed
+
+
+class PublicReportView(Menu):
+    def __init__(self,bot,month):
+        super().__init__(bot,persistent=True)
+        for title,period in [('🏆 This month','month'),('📜 All-time','all')]:
+            async def choose(i,value=period):
+                await i.response.defer()
+                await public_board(bot,month,value,force=True)
+            self.button(title,choose,custom_id=f'standly:mizan-public:{month}:{period}')
+        async def receipts(i):
+            await show_report(bot,i,month,details=True)
+        self.button('Point history',receipts,custom_id=f'standly:mizan-public:{month}:history')
+
+
+async def public_board(bot,month=None,period=None,force=False):
+    month=month or month_of(bot.store.clock(),bot.store.tz)
+    async with bot.report_lock:
+        key=f'public_mizan:{month}'
+        state=bot.store.get(key,{})
+        period=period or state.get('period','month')
+        embed=standings_embed(bot.store,month,period)
+        import json
+        signature=json.dumps(embed.to_dict(),sort_keys=True)
+        if not force and state.get('signature')==signature and state.get('channel')==bot.store.get('channel_id'):return state
+        channel=await bot.channel()
+        if not channel:return {}
+        view=PublicReportView(bot,month)
+        message=None
+        if state.get('message') and state.get('channel')==channel.id:
+            try:
+                message=await channel.fetch_message(state['message'])
+                await message.edit(embed=embed,view=view)
+            except discord.NotFound:message=None
+        if message is None:message=await channel.send(embed=embed,view=view)
+        state={'message':message.id,'channel':channel.id,'period':period,'signature':signature}
+        bot.store.set(key,state)
+        return state

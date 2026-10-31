@@ -92,8 +92,10 @@ class PollView(discord.ui.View):
 
 class MizanBot(discord.Client):
     def __init__(self, store):
+        intents=discord.Intents.default()
+        intents.members=os.getenv("WELCOME_ON_JOIN","false").lower()=="true"
         super().__init__(
-            intents=discord.Intents.default(),
+            intents=intents,
             allowed_mentions=discord.AllowedMentions(
                 everyone=False, roles=False, users=True, replied_user=False
             ),
@@ -107,6 +109,8 @@ class MizanBot(discord.Client):
         self.tick_errors = 0
         self.runner = None
         self.test_sessions = {}
+        self.welcome_lock = asyncio.Lock()
+        self.report_lock = asyncio.Lock()
         self.move_lock = asyncio.Lock()
         self.poll_render_lock = asyncio.Lock()
         register_commands(self)
@@ -144,6 +148,10 @@ class MizanBot(discord.Client):
             await interaction.followup.send(message, ephemeral=True)
         else:
             await interaction.response.send_message(message, ephemeral=True)
+
+    async def on_member_join(self,member):
+        from .welcome import deliver
+        await deliver(self,member)
 
     async def channel(self):
         cid = self.store.get("channel_id")
@@ -307,6 +315,10 @@ class MizanBot(discord.Client):
     async def setup_hook(self):
         self.http_client = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20))
         self.add_view(ui.Panel(self))
+        from .reports import PublicReportView
+        for row in self.store.rows("SELECT key,value FROM settings WHERE key LIKE 'public_mizan:%'"):
+            state=json.loads(row["value"])
+            self.add_view(PublicReportView(self,row["key"].split(":",1)[1]),message_id=state["message"])
         from .debug import DebugPanel
         self.add_view(DebugPanel(self))
         for s in self.store.rows(
@@ -372,6 +384,8 @@ class MizanBot(discord.Client):
     @scheduler.before_loop
     async def before_scheduler(self):
         await self.wait_until_ready()
+        from .community import configure_channel
+        await configure_channel(self)
         from .debug import ensure
         await ensure(self)
         channel=await self.channel()
@@ -380,6 +394,13 @@ class MizanBot(discord.Client):
             try:
                 await (await channel.fetch_message(panel)).edit(content='🦆 **Shaykh Standly · Arabic Class**\nRSVPs, class progress and lessons. Private rehearsals live in #shaykh-debug.',view=ui.Panel(self))
             except discord.NotFound: self.store.set('panel_message_id',None)
+        if self.intents.members:
+            from .welcome import deliver
+            gid=int(os.getenv('DISCORD_GUILD_ID') or self.store.get('guild_id',0))
+            guild=self.get_guild(gid)
+            if guild:
+                for member in guild.members:
+                    if not self.store.get(f'welcome:blocked:{member.id}'): await deliver(self,member)
         for s in self.store.rows("SELECT * FROM sessions WHERE status='scheduled' AND message_id IS NOT NULL"):
             await self.update_card(s['id'])
 
@@ -390,6 +411,9 @@ class MizanBot(discord.Client):
         if not self.store.get("channel_id"):
             return
         await ui.ensure_panel(self)
+        from .reports import public_board
+        if not hasattr(self,"demo_owner") and self.is_ready():
+            await public_board(self)
         await consensus.flush(self)
         for poll in self.store.rows("SELECT id FROM polls WHERE status='open'"):
             if consensus.winner(self.store,poll['id']) is not None:
@@ -752,6 +776,11 @@ def register_commands(bot):
         month = month or month_of(store.clock(), store.tz)
         from .reports import show_report
         await show_report(bot,interaction,month)
+
+    @tree.command(description="Privately replay the Arabic class welcome and how-to guide")
+    async def welcome(interaction:discord.Interaction):
+        from .welcome import open_private
+        await open_private(bot,interaction)
 
     @tree.command(description="Show class preparation and Quizlet links")
     async def resources(interaction: discord.Interaction):
