@@ -9,7 +9,8 @@ from datetime import datetime,timedelta
 import discord
 from .core import RuleError,stamp
 from .ui import Menu,guard_context
-from .content import roast,plain_roast,burn
+from .content import roast,sms_roast
+from .wuphf import fit_sms
 
 ACTIVE=('waiting_sms','waiting_call')
 
@@ -87,22 +88,22 @@ async def create_manual(bot,interaction,uid):
 
 
 def sms_text(bot,job,followup):
-    """Plain-English text. Arabic stays in Discord: it would triple the SMS segment count."""
+    """Opener, Arabic roast, English roast, reply instruction; wuphf.fit_sms drops whole lines to stay within 3 parts."""
     s=bot.store;uid=job['user_id']
-    insult=burn(s,uid) if followup else plain_roast(s,uid)
+    arabic,english=sms_roast(s,uid)
     if job['source']=='auto':
         session=s.session(job['session_id'])
         if replies_enabled():action="Reply YES if you're coming or NO if you can't."
         elif session['message_id']:action=f"RSVP in Discord: https://discord.com/channels/{s.get('guild_id')}/{s.get('channel_id')}/{session['message_id']}"
         else:action='Open Discord and RSVP.'
         opener='Second notice, and the whole class channel has been told.' if followup else 'Your Arabic class RSVP is overdue.'
-        return f'{opener} {insult} {action}'
+        return fit_sms(opener,action,arabic,english)
     actor=s.one('SELECT name FROM members WHERE user_id=?',(job['actor'],))
     who=actor['name'] if actor else 'Someone'
     if replies_enabled():action='Reply HERE to check in.'
     else:action=f"Tap I'm here on your WUPHF card: https://discord.com/channels/{s.get('guild_id')}/{s.get('channel_id')}/{job['message_id']}"
     opener='Still hiding? The class channel is watching.' if followup else f'{who} is looking for you in Arabic class.'
-    return f'{opener} {insult} {action}'
+    return fit_sms(opener,action,arabic,english)
 
 
 def public_text(bot,job,followup):

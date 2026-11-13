@@ -8,8 +8,53 @@ from zoneinfo import ZoneInfo
 
 import aiohttp
 
-from .content import ascii_sms
+from .content import ascii_sms, strip_harakat
 from .core import RuleError, stamp
+
+SMS_PREFIX = "Shaykh Standly: "
+SMS_STOP = " Reply STOP to stop SMS."
+SMS_PARTS = 3
+UCS2_PART = 66  # 67 is the real concatenated limit; one unit of margin because the sender type is unconfirmed
+GSM_PART = 153
+GSM7 = frozenset(
+    "\n\r 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+    "@£$¥èéùìòÇØøÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ!\"#¤%&'()*+,-./:;<=>?¡ÄÖÑÜ§¿äöñüà"
+)
+GSM7_EXT = frozenset("^{}\\[~]|€")
+
+
+def sms_units(body):
+    """Return (encoding, units): GSM-7 septets (extension characters cost 2), else UTF-16 code units."""
+    if all(ch in GSM7 or ch in GSM7_EXT for ch in body):
+        return "GSM-7", sum(2 if ch in GSM7_EXT else 1 for ch in body)
+    return "UCS-2", len(body.encode("utf-16-le")) // 2
+
+
+def sms_fits(body):
+    """True when the body fits SMS_PARTS parts: 459 septets (GSM-7) or 198 UTF-16 units (UCS-2)."""
+    encoding, units = sms_units(body)
+    return units <= SMS_PARTS * (GSM_PART if encoding == "GSM-7" else UCS2_PART)
+
+
+def fit_sms(opener, action, arabic="", english=""):
+    """Join the text lines, richest layout that fits first: drop the English, then the Arabic, then both.
+
+    The opener and the action (the reply instruction) are never cut and nothing is ever sliced;
+    if even those two exceed the budget they are sent whole.
+    """
+    opener, action, english = ascii_sms(opener), ascii_sms(action), ascii_sms(english)
+    arabic = strip_harakat(arabic)
+    layouts = [
+        [opener, arabic, english, action],
+        [opener, arabic, action],
+        [opener, english, action],
+        [opener, action],
+    ]
+    candidates = ["\n".join(part for part in layout if part) for layout in layouts]
+    for text in candidates:
+        if sms_fits(SMS_PREFIX + text + SMS_STOP):
+            return text
+    return candidates[-1]
 
 
 class Wuphf:
@@ -85,7 +130,7 @@ class Wuphf:
         data = {
             "To": phone,
             "From": os.environ["TWILIO_PHONE_NUMBER"],
-            "Body": "Shaykh Standly: " + ascii_sms(message)[:300] + " Reply STOP to stop SMS.",
+            "Body": SMS_PREFIX + message + SMS_STOP,
         }
         try:
             async with client.post(

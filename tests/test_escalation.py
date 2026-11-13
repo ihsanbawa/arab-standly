@@ -5,9 +5,9 @@ from unittest.mock import AsyncMock
 import pytest
 from mizan.core import Store,RuleError,parse_local,stamp
 from mizan.bot import MizanBot
-from mizan.wuphf import Wuphf
+from mizan.wuphf import Wuphf,SMS_PREFIX,SMS_STOP,sms_fits
 from mizan.escalation import enqueue_auto,process,create_manual,Acknowledge,recover_interrupted
-from mizan.content import ROASTS,roast
+from mizan.content import ROASTS,roast,strip_harakat,ascii_sms
 
 @pytest.fixture
 def world(tmp_path,monkeypatch):
@@ -42,7 +42,11 @@ def test_auto_text_two_hours_then_ruder_text_two_hours_after_actual_text(world):
         first,second=[x.args for x in bot.wuphf.send.call_args_list]
         assert first[2]==second[2]=='sms'
         assert first[3].startswith('Your Arabic class RSVP is overdue.') and second[3].startswith('Second notice')
-        assert first[3].isascii() and second[3].isascii()
+        for text in (first[3],second[3]):
+            assert any('\u0621'<=ch<='\u064a' for ch in text)
+            assert not any('\u064b'<=ch<='\u0652' or ch=='\u0670' for ch in text)
+            assert sms_fits(SMS_PREFIX+text+SMS_STOP)
+        assert first[3].split('\n')[1]!=second[3].split('\n')[1]
         assert s.one('SELECT state FROM wuphf_jobs WHERE id=?',(jid,))['state']=='done'
         # Each text is also announced, with a roast, in the class channel.
         posts=[x.args[0] for x in bot.notify.call_args_list]
@@ -233,6 +237,29 @@ def test_public_post_failure_does_not_disturb_job_state(world):
         bot=bot_for(s);jid=enqueue_auto(bot,s.session(sid),1)
         bot.notify.side_effect=discord.HTTPException(SimpleNamespace(status=403,reason='Forbidden'),'no')
         c[0]+=timedelta(hours=2);await process(bot)
+        assert s.one('SELECT state FROM wuphf_jobs WHERE id=?',(jid,))['state']=='waiting_call'
+        await bot.close()
+    asyncio.run(run())
+
+
+def test_first_text_reaches_twilio_with_arabic_roast_in_locked_layout(world,monkeypatch):
+    s,c,sid=world
+    for k,v in {'TWILIO_ACCOUNT_SID':'ACtest','TWILIO_AUTH_TOKEN':'test','TWILIO_PHONE_NUMBER':'+15555550100','WUPHF_CONTACTS_JSON':'{"1":"PHONE_A"}','PHONE_A':'+15555550101','TWILIO_WEBHOOK_URL':'https://example.test/twilio/sms'}.items():monkeypatch.setenv(k,v)
+    sent=[]
+    class Reply:
+        status=201
+        async def __aenter__(self):return self
+        async def __aexit__(self,*exc):return False
+    class FakeHttp:
+        def post(self,url,data=None,auth=None):
+            sent.append(data);return Reply()
+        async def close(self):pass
+    async def run():
+        bot=MizanBot(s);bot.notify=AsyncMock();bot.notify_once=AsyncMock();bot.http_client=FakeHttp()
+        jid=enqueue_auto(bot,s.session(sid),1)
+        c[0]+=timedelta(hours=2);await process(bot)
+        assert len(sent)==1
+        assert sent[0]['Body']==("Shaykh Standly: Your Arabic class RSVP is overdue.\n"+strip_harakat(ROASTS[0][0])+"\n"+ascii_sms(ROASTS[0][1])+"\nReply YES if you're coming or NO if you can't. Reply STOP to stop SMS.")
         assert s.one('SELECT state FROM wuphf_jobs WHERE id=?',(jid,))['state']=='waiting_call'
         await bot.close()
     asyncio.run(run())

@@ -1,3 +1,6 @@
+import unicodedata
+
+
 ROASTS = [
     ("يَا مَلِكَ الْأَعْذَارِ!", "O king of excuses!", "عُذْرٌ = excuse · أَعْذَارٌ = excuses"),
     ("أَيْنَ أَنْتَ؟ حَتَّى كِتَابُكَ يَسْأَلُ عَنْكَ!", "Where are you? Even your book is asking about you!", "أَيْنَ = where"),
@@ -84,3 +87,18 @@ def plain_roast(store, uid):
 def burn(store, uid):
     """A harsher line for the follow-up text."""
     return _rotate(store, f'roast:burn:{uid}', BURNS)
+
+
+def strip_harakat(text):
+    """Remove Arabic vowel marks for SMS; keep letters and the hamza/maddah marks that are spelling."""
+    keep = {"\u0653", "\u0654", "\u0655"}
+    return "".join(
+        ch for ch in unicodedata.normalize("NFC", text)
+        if not ("\u0600" <= ch <= "\u06ff" and unicodedata.category(ch) == "Mn" and ch not in keep)
+    )
+
+
+def sms_roast(store, uid):
+    """Next roast as (Arabic without vowel marks, ASCII English) for a text; the vocabulary note is left out."""
+    arabic, english, _note = _rotate(store, f'roast:sms:{uid}', ROASTS)
+    return strip_harakat(arabic), ascii_sms(english)
