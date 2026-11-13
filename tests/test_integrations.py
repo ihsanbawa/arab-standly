@@ -1,4 +1,4 @@
-"""Exercise provider boundaries without credentials, texts, calls or real charges."""
+"""Exercise provider boundaries without credentials, texts or real charges."""
 
 import asyncio
 import json
@@ -236,9 +236,9 @@ def test_wuphf_uses_real_class_text_and_no_retry_after_timeout(fixture, monkeypa
 
     async def run():
         with pytest.raises(RuleError, match="uncertain"):
-            await w.send(client, 1, "calls", "Class at IACC after Fajr.")
+            await w.send(client, 1, "sms", "Class at IACC after Fajr.")
         with pytest.raises(RuleError, match="hour"):
-            await w.send(client, 1, "calls", "Class at IACC after Fajr.")
+            await w.send(client, 1, "sms", "Class at IACC after Fajr.")
         assert client.count == 1
 
     asyncio.run(run())

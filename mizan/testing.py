@@ -20,7 +20,7 @@ class DemoWuphf(Wuphf):
         self.reserve(uid, mode, message)
         with self.store.db:
             self.store.log(uid, 'test_nudge', {'method':mode,'message':message})
-        return f'TEST ONLY: simulated {mode}. No text or call was sent. Consent, quiet hours and cooldown checks ran normally.'
+        return f'TEST ONLY: simulated {mode}. No text was sent. Consent, quiet hours and cooldown checks ran normally.'
 
 
 class DemoChannel:
@@ -378,4 +378,4 @@ async def rehearse_wuphf(demo,i):
     view.button('Advance 2 hours',advance)
     view.button('RSVP as member 2',answer)
     view.button('Test home',home)
-    await send(i,'🧪 **Automatic WUPHF rehearsal**\nStart with a missing RSVP, then advance twice: simulated text, simulated call. Or RSVP between the two to cancel the call. All phone requests stay mocked.',view)
+    await send(i,'🧪 **Automatic WUPHF rehearsal**\nStart with a missing RSVP, then advance twice: simulated text, simulated follow-up text. Or RSVP between the two to cancel the follow-up. All phone requests stay mocked.',view)

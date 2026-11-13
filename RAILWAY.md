@@ -28,7 +28,7 @@ A dedicated Railway project/service and a 500 MB volume at `/data` have been pre
 
 ## Live integrations
 
-Add Twilio and recipient variables from README. Each member must opt in before `/wuphf` works.
+Add Twilio and recipient variables from README. To accept RSVP replies by text, generate a public domain for the service, set `TWILIO_WEBHOOK_URL` to `https://<domain>/twilio/sms`, and point the Twilio number’s incoming-message webhook at the same URL.
 
 For Beeminder, follow BEEMINDER.md and validate every account using `/beeminder` before enabling. Agreed stakes: **$5 initial pledge, $90 cap**. The bot never creates a goal, changes a pledge, or directly charges a card.
 

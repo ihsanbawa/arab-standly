@@ -1,8 +1,16 @@
-"""Persistent Discord → SMS → call jobs; responses cancel the remaining steps."""
+"""Persistent Discord → text → ruder text jobs; responses cancel the remaining steps.
+
+Phone calls are retired. The stored state names 'waiting_call'/'sending_call' and the
+call_* columns are kept so existing records and code rollbacks stay compatible: they
+now mean the second, follow-up text.
+"""
+import os
 from datetime import datetime,timedelta
 import discord
 from .core import RuleError,stamp
 from .ui import Menu,guard_context
+from .content import roast,sms_roast
+from .wuphf import fit_sms
 
 ACTIVE=('waiting_sms','waiting_call')
 
@@ -10,6 +18,11 @@ ACTIVE=('waiting_sms','waiting_call')
 def recover_interrupted(store):
     with store.db:
         store.db.execute("UPDATE wuphf_jobs SET state='uncertain',reason='Restart during provider request' WHERE state IN ('sending_sms','sending_call')")
+
+
+def replies_enabled():
+    """Text replies only work once Twilio is pointed at this bot's webhook."""
+    return bool(os.getenv('TWILIO_WEBHOOK_URL'))
 
 
 def still_needed(store,job):
@@ -42,11 +55,21 @@ class Acknowledge(Menu):
         self.button('I’m here — stop this WUPHF',ack,custom_id=f'standly:wuphf-ack:{jid}',style=discord.ButtonStyle.success)
 
 
+def may_summon(bot,interaction):
+    """Only the class roster (or the bot owner) may set the telephone department on someone."""
+    if hasattr(bot,'demo_owner'):return
+    uid=interaction.user.id
+    if uid==int(os.environ.get('BOT_OWNER_ID') or 0):return
+    if not bot.store.one('SELECT 1 FROM members WHERE user_id=? AND active=1',(uid,)):
+        raise RuleError('Only class roster members can WUPHF someone.')
+
+
 async def create_manual(bot,interaction,uid):
     bot.check_guild(interaction)
+    may_summon(bot,interaction)
     bot.wuphf.phone(uid)
     prefs=bot.wuphf.preferences(uid)
-    if not prefs.get('sms') or not prefs.get('calls'):raise RuleError('This person has stopped phone nudges. They can use /resumenudges themselves.')
+    if not prefs.get('sms'):raise RuleError('This person has stopped phone nudges. They can use /resumenudges themselves.')
     s=bot.store
     if s.one("SELECT id FROM wuphf_jobs WHERE user_id=? AND state IN ('waiting_sms','waiting_call','sending_sms','sending_call')",(uid,)):
         raise RuleError('A WUPHF is already pending for this person. They can acknowledge it on its card.')
@@ -56,11 +79,46 @@ async def create_manual(bot,interaction,uid):
         s.log(interaction.user.id,'wuphf_requested',{'job':jid,'recipient':uid})
     await interaction.response.defer(ephemeral=True)
     channel=await bot.channel()
-    msg=await channel.send(f'📣 **WUPHF!** <@{uid}> — <@{interaction.user.id}> is looking for you.\nأَيْنَ أَنْتَ؟ حَتَّى هَاتِفُكَ يَسْأَلُ عَنْكَ!\nEven your phone is asking where you are.\nText queued now; one call an hour after the text if you haven’t checked in. Quiet hours and shared limits apply.',view=Acknowledge(bot,jid))
+    how='Tap **I’m here** or reply HERE to the text.' if replies_enabled() else 'Tap **I’m here** to make it stop.'
+    msg=await channel.send(f'📣 **WUPHF!** <@{uid}> — <@{interaction.user.id}> is looking for you.\n{roast(jid,s,uid)}\nText queued now; a ruder one in an hour if you haven’t checked in, and everyone here gets to watch. {how} Quiet hours and shared limits apply.',view=Acknowledge(bot,jid))
     with s.db:s.db.execute('UPDATE wuphf_jobs SET message_id=? WHERE id=?',(msg.id,jid))
     await process(bot)
     await interaction.followup.send('📣 WUPHF created. The mentioned person can stop it with **I’m here**. They can stop all phone nudges with /stopnudges.',ephemeral=True)
     return jid
+
+
+def sms_text(bot,job,followup):
+    """Opener, Arabic roast, English roast, reply instruction; wuphf.fit_sms drops whole lines to stay within 3 parts."""
+    s=bot.store;uid=job['user_id']
+    arabic,english=sms_roast(s,uid)
+    if job['source']=='auto':
+        session=s.session(job['session_id'])
+        if replies_enabled():action="Reply YES if you're coming or NO if you can't."
+        elif session['message_id']:action=f"RSVP in Discord: https://discord.com/channels/{s.get('guild_id')}/{s.get('channel_id')}/{session['message_id']}"
+        else:action='Open Discord and RSVP.'
+        opener='Second notice, and the whole class channel has been told.' if followup else 'Your Arabic class RSVP is overdue.'
+        return fit_sms(opener,action,arabic,english)
+    actor=s.one('SELECT name FROM members WHERE user_id=?',(job['actor'],))
+    who=actor['name'] if actor else 'Someone'
+    if replies_enabled():action='Reply HERE to check in.'
+    else:action=f"Tap I'm here on your WUPHF card: https://discord.com/channels/{s.get('guild_id')}/{s.get('channel_id')}/{job['message_id']}"
+    opener='Still hiding? The class channel is watching.' if followup else f'{who} is looking for you in Arabic class.'
+    return fit_sms(opener,action,arabic,english)
+
+
+def public_text(bot,job,followup):
+    uid=job['user_id'];line=roast(job['id']+uid,bot.store,uid)
+    if job['source']=='auto':
+        head=f"📣 <@{uid}> still hasn’t RSVPed for Class #{job['session_id']}. Second text sent." if followup else f"📣 <@{uid}> ignored the RSVP for Class #{job['session_id']}, so the telephone department texted them."
+    else:
+        head=f"📣 <@{uid}> still hasn’t checked in. Second, ruder text sent."
+    return f'{head}\n{line}'
+
+
+async def announce(bot,text):
+    """The public shaming is best-effort: a Discord failure must not disturb job state."""
+    try:await bot.notify(text)
+    except discord.HTTPException:pass
 
 
 async def process(bot):
@@ -70,7 +128,7 @@ async def process(bot):
 
 async def _process(bot):
     s=bot.store
-    # A process crash during a provider request is ambiguous: never repeat it or advance to a call.
+    # A process crash during a provider request is ambiguous: never repeat it or advance to the follow-up.
     for job in s.rows("SELECT * FROM wuphf_jobs WHERE state IN ('waiting_sms','waiting_call') ORDER BY id"):
         uid=job['user_id']
         if job['source']=='manual' and s.clock()>=datetime.fromisoformat(job['created_at'])+timedelta(hours=24):
@@ -79,30 +137,20 @@ async def _process(bot):
         if not still_needed(s,job):
             with s.db:s.db.execute("UPDATE wuphf_jobs SET state='answered' WHERE id=?",(job['id'],))
             continue
-        prefs=bot.wuphf.preferences(uid)
-        if not prefs.get('sms') or not prefs.get('calls'):
+        if not bot.wuphf.preferences(uid).get('sms'):
             with s.db:s.db.execute("UPDATE wuphf_jobs SET state='stopped' WHERE id=?",(job['id'],))
             continue
-        mode='sms' if job['state']=='waiting_sms' else 'calls'
-        due=job['sms_due'] if mode=='sms' else job['call_due']
+        followup=job['state']=='waiting_call'
+        due=job['call_due'] if followup else job['sms_due']
         if not due or s.clock()<datetime.fromisoformat(due):continue
-        try:bot.wuphf.check(uid,mode)
+        try:bot.wuphf.check(uid,'sms')
         except RuleError as exc:
             if 'hiatus' in str(exc):
                 with s.db:s.db.execute("UPDATE wuphf_jobs SET state='stopped' WHERE id=?",(job['id'],))
             continue # Quiet hours, cooldown, daily cap, or unconfigured provider: wait.
-        sending='sending_sms' if mode=='sms' else 'sending_call'
+        sending='sending_call' if followup else 'sending_sms'
         with s.db:s.db.execute('UPDATE wuphf_jobs SET state=? WHERE id=?',(sending,job['id']))
-        if job['source']=='auto':
-            session=s.session(job['session_id'])
-            url=f"https://discord.com/channels/{s.get('guild_id')}/{s.get('channel_id')}/{session['message_id']}" if session['message_id'] else 'Please open Discord.'
-            text=f"Arabic class: please RSVP in Discord. {url} Your textbook has answered more questions than you today."
-        else:
-            gid=s.get('guild_id');cid=s.get('channel_id')
-            text=f"Someone in Arabic Class is looking for you. Tap I'm here on your WUPHF card to stop the follow-up: https://discord.com/channels/{gid}/{cid}/{job['message_id']}"
-        if mode=='calls':
-            text='Your Arabic class RSVP is still missing. Please open Discord and answer the class card. The duck is waiting.' if job['source']=='auto' else 'Someone in Arabic Class is looking for you. Please open Discord and tap I am here on your WUPHF card.'
-        try:await bot.wuphf.send(bot.http_client,uid,mode,text)
+        try:await bot.wuphf.send(bot.http_client,uid,'sms',sms_text(bot,job,followup))
         except Exception as exc:
             with s.db:
                 s.db.execute("UPDATE wuphf_jobs SET state='uncertain',reason=? WHERE id=?",(type(exc).__name__,job['id']))
@@ -112,5 +160,8 @@ async def _process(bot):
         with s.db:
             if not still_needed(s,job):
                 s.db.execute("UPDATE wuphf_jobs SET state='answered' WHERE id=? AND state=?",(job['id'],sending))
-            elif mode=='sms':s.db.execute("UPDATE wuphf_jobs SET state='waiting_call',sms_sent=?,call_due=? WHERE id=? AND state=?",(sent,stamp(s.clock()+timedelta(minutes=job['call_delay'])),job['id'],sending))
-            else:s.db.execute("UPDATE wuphf_jobs SET state='done',call_sent=? WHERE id=? AND state=?",(sent,job['id'],sending))
+                continue
+            if followup:s.db.execute("UPDATE wuphf_jobs SET state='done',call_sent=? WHERE id=? AND state=?",(sent,job['id'],sending))
+            else:s.db.execute("UPDATE wuphf_jobs SET state='waiting_call',sms_sent=?,call_due=? WHERE id=? AND state=?",(sent,stamp(s.clock()+timedelta(minutes=job['call_delay'])),job['id'],sending))
+        # The manual card already named them in public; every other text gets its own post.
+        if followup or job['source']=='auto':await announce(bot,public_text(bot,job,followup))

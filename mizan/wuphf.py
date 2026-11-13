@@ -1,15 +1,60 @@
-"""Group-authorised SMS/voice nudges. Contacts stay in private environment variables."""
+"""Group-authorised SMS nudges (calls are retired). Contacts stay in private environment variables."""
 
 import json
 import os
 import re
 from datetime import datetime, timedelta
-from xml.sax.saxutils import escape
 from zoneinfo import ZoneInfo
 
 import aiohttp
 
+from .content import ascii_sms, strip_harakat
 from .core import RuleError, stamp
+
+SMS_PREFIX = "Shaykh Standly: "
+SMS_STOP = " Reply STOP to stop SMS."
+SMS_PARTS = 3
+UCS2_PART = 66  # 67 is the real concatenated limit; one unit of margin because the sender type is unconfirmed
+GSM_PART = 153
+GSM7 = frozenset(
+    "\n\r 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+    "@£$¥èéùìòÇØøÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ!\"#¤%&'()*+,-./:;<=>?¡ÄÖÑÜ§¿äöñüà"
+)
+GSM7_EXT = frozenset("^{}\\[~]|€")
+
+
+def sms_units(body):
+    """Return (encoding, units): GSM-7 septets (extension characters cost 2), else UTF-16 code units."""
+    if all(ch in GSM7 or ch in GSM7_EXT for ch in body):
+        return "GSM-7", sum(2 if ch in GSM7_EXT else 1 for ch in body)
+    return "UCS-2", len(body.encode("utf-16-le")) // 2
+
+
+def sms_fits(body):
+    """True when the body fits SMS_PARTS parts: 459 septets (GSM-7) or 198 UTF-16 units (UCS-2)."""
+    encoding, units = sms_units(body)
+    return units <= SMS_PARTS * (GSM_PART if encoding == "GSM-7" else UCS2_PART)
+
+
+def fit_sms(opener, action, arabic="", english=""):
+    """Join the text lines, richest layout that fits first: drop the English, then the Arabic, then both.
+
+    The opener and the action (the reply instruction) are never cut and nothing is ever sliced;
+    if even those two exceed the budget they are sent whole.
+    """
+    opener, action, english = ascii_sms(opener), ascii_sms(action), ascii_sms(english)
+    arabic = strip_harakat(arabic)
+    layouts = [
+        [opener, arabic, english, action],
+        [opener, arabic, action],
+        [opener, english, action],
+        [opener, action],
+    ]
+    candidates = ["\n".join(part for part in layout if part) for layout in layouts]
+    for text in candidates:
+        if sms_fits(SMS_PREFIX + text + SMS_STOP):
+            return text
+    return candidates[-1]
 
 
 class Wuphf:
@@ -20,6 +65,13 @@ class Wuphf:
         if not self.store.one("SELECT 1 FROM members WHERE user_id=? AND active=1", (uid,)):
             raise RuleError("Only active class members can opt in.")
         self.store.set(f"nudges:{uid}", {"sms": sms, "calls": calls, "early": early})
+
+    def member_for(self, phone):
+        """Reverse lookup for inbound texts: which roster member owns this number?"""
+        for uid, envname in json.loads(os.getenv("WUPHF_CONTACTS_JSON", "{}")).items():
+            if phone and os.getenv(envname, "") == phone:
+                return int(uid)
+        return None
 
     def phone(self, uid):
         contacts = json.loads(os.getenv("WUPHF_CONTACTS_JSON", "{}"))
@@ -36,7 +88,7 @@ class Wuphf:
 
     def check(self, uid, mode):
         prefs = self.preferences(uid)
-        if mode not in {"sms", "calls"} or not prefs.get(mode):
+        if mode != "sms" or not prefs.get("sms"):
             raise RuleError("This person has stopped that nudge method.")
         member=self.store.one("SELECT active FROM members WHERE user_id=?",(uid,))
         if member and not member["active"]: raise RuleError("This member is on hiatus.")
@@ -75,20 +127,14 @@ class Wuphf:
     async def send(self, client, uid, mode, message):
         phone = self.reserve(uid, mode, message)
         sid = os.environ["TWILIO_ACCOUNT_SID"]
-        data = {"To": phone, "From": os.environ["TWILIO_PHONE_NUMBER"]}
-        if mode == "sms":
-            endpoint = "Messages"
-            data["Body"] = "Shaykh Standly: " + message[:300] + " Reply STOP to stop SMS."
-        else:
-            endpoint = "Calls"
-            data["Twiml"] = (
-                "<Response><Say>"
-                + escape("Shaykh Standly Arabic class reminder. " + message[:300])
-                + "</Say></Response>"
-            )
+        data = {
+            "To": phone,
+            "From": os.environ["TWILIO_PHONE_NUMBER"],
+            "Body": SMS_PREFIX + message + SMS_STOP,
+        }
         try:
             async with client.post(
-                f"https://api.twilio.com/2010-04-01/Accounts/{sid}/{endpoint}.json",
+                f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json",
                 data=data,
                 auth=aiohttp.BasicAuth(sid, os.environ["TWILIO_AUTH_TOKEN"]),
             ) as r:
