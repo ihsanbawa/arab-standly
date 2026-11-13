@@ -1,14 +1,14 @@
-"""Group-authorised SMS/voice nudges. Contacts stay in private environment variables."""
+"""Group-authorised SMS nudges (calls are retired). Contacts stay in private environment variables."""
 
 import json
 import os
 import re
 from datetime import datetime, timedelta
-from xml.sax.saxutils import escape
 from zoneinfo import ZoneInfo
 
 import aiohttp
 
+from .content import ascii_sms
 from .core import RuleError, stamp
 
 
@@ -20,6 +20,13 @@ class Wuphf:
         if not self.store.one("SELECT 1 FROM members WHERE user_id=? AND active=1", (uid,)):
             raise RuleError("Only active class members can opt in.")
         self.store.set(f"nudges:{uid}", {"sms": sms, "calls": calls, "early": early})
+
+    def member_for(self, phone):
+        """Reverse lookup for inbound texts: which roster member owns this number?"""
+        for uid, envname in json.loads(os.getenv("WUPHF_CONTACTS_JSON", "{}")).items():
+            if phone and os.getenv(envname, "") == phone:
+                return int(uid)
+        return None
 
     def phone(self, uid):
         contacts = json.loads(os.getenv("WUPHF_CONTACTS_JSON", "{}"))
@@ -36,7 +43,7 @@ class Wuphf:
 
     def check(self, uid, mode):
         prefs = self.preferences(uid)
-        if mode not in {"sms", "calls"} or not prefs.get(mode):
+        if mode != "sms" or not prefs.get("sms"):
             raise RuleError("This person has stopped that nudge method.")
         member=self.store.one("SELECT active FROM members WHERE user_id=?",(uid,))
         if member and not member["active"]: raise RuleError("This member is on hiatus.")
@@ -75,20 +82,14 @@ class Wuphf:
     async def send(self, client, uid, mode, message):
         phone = self.reserve(uid, mode, message)
         sid = os.environ["TWILIO_ACCOUNT_SID"]
-        data = {"To": phone, "From": os.environ["TWILIO_PHONE_NUMBER"]}
-        if mode == "sms":
-            endpoint = "Messages"
-            data["Body"] = "Shaykh Standly: " + message[:300] + " Reply STOP to stop SMS."
-        else:
-            endpoint = "Calls"
-            data["Twiml"] = (
-                "<Response><Say>"
-                + escape("Shaykh Standly Arabic class reminder. " + message[:300])
-                + "</Say></Response>"
-            )
+        data = {
+            "To": phone,
+            "From": os.environ["TWILIO_PHONE_NUMBER"],
+            "Body": "Shaykh Standly: " + ascii_sms(message)[:300] + " Reply STOP to stop SMS.",
+        }
         try:
             async with client.post(
-                f"https://api.twilio.com/2010-04-01/Accounts/{sid}/{endpoint}.json",
+                f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json",
                 data=data,
                 auth=aiohttp.BasicAuth(sid, os.environ["TWILIO_AUTH_TOKEN"]),
             ) as r:

@@ -22,7 +22,7 @@ A Discord bot for a four-person **in-person** Arabic class. Coordinates Saturday
 - Shared minimum of two classes per calendar month, at-risk alerts, unresolved-makeup reminders.
 - Private record export, restricted TA commands, audit trail, persistent SQLite storage.
 - Beeminder **group** monthly-compliance adapter, disabled until configured. See [BEEMINDER.md](BEEMINDER.md).
-- Automatic Discord → SMS → call RSVP escalation and member-triggered `/wuphf @person`; group-authorised defaults, personal stop/resume, quiet hours, cooldown and daily limits.
+- Automatic Discord → text → ruder text RSVP escalation, each text announced with a roast in the class channel; RSVP by replying YES/NO to the text; roster-only `/wuphf @person`; group-authorised defaults, personal stop/resume, quiet hours, cooldown and daily limits.
 
 The book-based learning assistant, automated grading, and Quizlet completion tracking are **not included** in this first version. The two supplied Quizlet links are included as resources.
 
@@ -75,7 +75,7 @@ Open **#shaykh-debug → Start weekly rehearsal**, or `/testmode` inside that pr
 
 **Streaks & danger tests** opens optional tools for clock jumps, poll-voter simulation, WUPHF rehearsal tools and the mock group-commitment preview. Its streak example resets the private test session and creates two successful sample months; its month-end button runs the real danger checks. **Reset test session** starts over.
 
-Each TA gets separate in-memory records. Test messages are private, marked TEST ONLY, and suppress mentions. Live members, records, SMS/calls and Beeminder writes are untouched. WUPHF delivery is mocked while keeping stop, quiet-hour and frequency checks. Test records disappear on reset or deployment. Test errors stay inside test controls rather than directing the user to live `/status`.
+Each TA gets separate in-memory records. Test messages are private, marked TEST ONLY, and suppress mentions. Live members, records, texts and Beeminder writes are untouched. WUPHF delivery is mocked while keeping stop, quiet-hour and frequency checks. Test records disappear on reset or deployment. Test errors stay inside test controls rather than directing the user to live `/status`.
 
 ### Streaks, danger and attendance display
 
@@ -110,13 +110,23 @@ Set `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, and `TWILIO_PHONE_NUMBER` private
 
 Phone nudges use the group’s agreed permission by default for privately configured recipients. No **My nudges** menu or opt-in step is required. `/stopnudges` stops all phone nudges to the requesting member and cancels pending jobs. `/resumenudges` resumes future jobs, retaining 9 PM–8 AM Dallas quiet hours. Existing explicit stop preferences are respected.
 
-**Automatic unanswered RSVP escalation:** once the RSVP deadline is reached, send the normal Discord DM/fallback mention. Queue SMS two hours after that nudge, then one call two hours after the actual SMS, only if no RSVP has been recorded. Any RSVP—including unavailable—stops escalation. A changed revision, cancellation, removed participant, hiatus, or class starting also stops it. Each class/revision/person gets one automatic sequence.
+**Automatic unanswered RSVP escalation:** once the RSVP deadline is reached, send the normal Discord DM/fallback mention. Queue a text two hours after that nudge, then one ruder follow-up text two hours after the actual first text, only if no RSVP has been recorded. Every text that goes out is also announced in the class channel with a roast, so ignoring it is public. There are no phone calls. Any RSVP—including unavailable—stops escalation. A changed revision, cancellation, removed participant, hiatus, or class starting also stops it. Each class/revision/person gets one automatic sequence.
 
-**Member-triggered WUPHF:** anyone in the configured Discord server can use `/wuphf @person` or **WUPHF someone**; no TA role or scheduled class is needed. The target must have a privately configured number. Post one public mention with an **I’m here** button, queue SMS immediately, then one call an hour after the actual SMS unless acknowledged. Only the recipient can acknowledge the job. One active sequence per recipient; manual jobs expire after 24 hours.
+**Member-triggered WUPHF:** any active roster member (or the bot owner) can use `/wuphf @person` or **WUPHF someone**; no TA role or scheduled class is needed. Other server members are refused. The target must have a privately configured number. Post one public mention with an **I’m here** button, queue a text immediately, then one ruder text (also announced in the channel) an hour after the first unless acknowledged. Only the recipient can acknowledge the job, with the button or by replying HERE to the text. One active sequence per recipient; manual jobs expire after 24 hours.
 
-All phone sends share a one-hour recipient cooldown, three-attempt local daily limit and quiet hours. Queues wait for permissible hours/capacity. Jobs and timestamps survive deployment. A provider timeout/error is terminal and surfaces for review; a restart during a provider request does not retry or advance to calls. There is no repeat-dial loop.
+All phone sends share a one-hour recipient cooldown, three-attempt local daily limit and quiet hours. Queues wait for permissible hours/capacity. Jobs and timestamps survive deployment. A provider timeout/error is terminal and surfaces for review; a restart during a provider request does not retry or advance to the follow-up text. There is no repeat loop.
 
-**Test mode:** Streaks & danger tests → advanced tools → **Test automatic WUPHF** rehearses Discord, text, call and cancellation with a fake clock and mocked phone provider. No real number is contacted.
+**Test mode:** Streaks & danger tests → advanced tools → **Test automatic WUPHF** rehearses Discord, text, follow-up text and cancellation with a fake clock and mocked phone provider. No real number is contacted.
+
+**RSVP by text (for members whose Discord buttons do not appear):** give the Railway service a public domain, set `TWILIO_WEBHOOK_URL` to `https://<that-domain>/twilio/sms`, and enter the same URL in the Twilio console under the phone number’s **Messaging → A message comes in** webhook (HTTP POST). Members can then reply to any text from the bot:
+
+- **YES** / **NO** — RSVP for their next scheduled class. NO applies the normal Al-Mizan deduction and public roast; a replacement time is still suggested in Discord.
+- **HERE** — acknowledge a pending WUPHF.
+- **STOP** / **START** — same as `/stopnudges` and `/resumenudges`.
+
+Replies are accepted only from numbers in `WUPHF_CONTACTS_JSON` and only when the request carries a valid Twilio signature for `TWILIO_WEBHOOK_URL`. Until that variable is set the route returns 404 and texts link to Discord instead of inviting a reply.
+
+Texts are plain English (the Arabic roasts stay in Discord) to keep each message to one or two SMS segments.
 
 Twilio may require sender registration/verification and verified destinations on trial accounts. SMS STOP handling is provided by Twilio; recipients can also disable nudges in Discord. A successful request means Twilio accepted it, not confirmed delivery. No private numbers are displayed in the channel or stored in class exports.
 

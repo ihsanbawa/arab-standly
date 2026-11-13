@@ -398,7 +398,7 @@ async def wuphf_menu(bot,interaction):
         await create_manual(bot,i,person.id)
     picker.callback=chosen
     view.add_item(picker)
-    await send(interaction,'📣 **WUPHF someone**\nPick a server member. They’ll get a Discord ping, then a text now and one call an hour later if they do not acknowledge it. Their phone must be configured privately. Quiet hours and shared limits apply. /stopnudges stops phone nudges to yourself.',view)
+    await send(interaction,'📣 **WUPHF someone**\nPick a classmate. They’ll get a public Discord ping and a text now, then a ruder text an hour later (announced here) if they do not check in. Roster members only. Their phone must be configured privately. Quiet hours and shared limits apply. /stopnudges stops phone nudges to yourself.',view)
 
 
 async def settings_menu(bot,interaction):

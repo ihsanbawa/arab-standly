@@ -365,6 +365,8 @@ class MizanBot(discord.Client):
             )
 
         app.router.add_get("/health", health)
+        from .inbound import attach
+        attach(self, app)
         self.runner = web.AppRunner(app)
         await self.runner.setup()
         await web.TCPSite(self.runner, "0.0.0.0", int(os.environ.get("PORT", "8080"))).start()
@@ -817,7 +819,7 @@ def register_commands(bot):
             ephemeral=True,
         )
 
-    @tree.command(description="Create a Discord, text, then call WUPHF for a mentioned server member")
+    @tree.command(description="Roster only: ping, text, then text again a missing classmate")
     async def wuphf(interaction:discord.Interaction,person:discord.Member|None=None):
         bot.check_guild(interaction)
         if person is None:return await ui.route(bot,interaction,'wuphf')
@@ -825,14 +827,14 @@ def register_commands(bot):
         from .escalation import create_manual
         await create_manual(bot,interaction,person.id)
 
-    @tree.command(description="Stop all texts and phone calls to you, including queued WUPHFs")
+    @tree.command(description="Stop all texts to you, including queued WUPHFs")
     async def stopnudges(interaction:discord.Interaction):
         bot.check_guild(interaction)
         store.set(f'nudges:{interaction.user.id}',{'sms':False,'calls':False,'early':False})
         with store.db:store.db.execute("UPDATE wuphf_jobs SET state='stopped' WHERE user_id=? AND state IN ('waiting_sms','waiting_call','sending_sms','sending_call')",(interaction.user.id,))
-        await interaction.response.send_message('📵 Texts and calls stopped, including pending WUPHFs. Discord class reminders still work. Use /resumenudges to resume phone nudges.',ephemeral=True)
+        await interaction.response.send_message('📵 Texts stopped, including pending WUPHFs. Discord class reminders still work. Use /resumenudges to resume phone nudges.',ephemeral=True)
 
-    @tree.command(description="Resume group-approved texts and calls to you, with normal quiet hours")
+    @tree.command(description="Resume group-approved texts to you, with normal quiet hours")
     async def resumenudges(interaction:discord.Interaction):
         bot.check_guild(interaction)
         store.set(f'nudges:{interaction.user.id}',{'sms':True,'calls':True,'early':False})

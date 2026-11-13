@@ -87,14 +87,16 @@ def test_test_wuphf_reuses_consent_quiet_hours_and_cooldown_without_http(root):
             await demo.wuphf.send(client,100,'sms','Test class')
         demo.wuphf.consent(100,True,False,False)
         result=await demo.wuphf.send(client,100,'sms','Test class')
-        assert 'No text or call was sent' in result
+        assert 'No text was sent' in result
         with pytest.raises(RuleError,match='hour'):
             await demo.wuphf.send(client,100,'sms','Test class')
         demo.test_clock=parse_local('2026-11-05 06:00',demo.store.tz)
         with pytest.raises(RuleError,match='Quiet hours'):
             await demo.wuphf.send(client,100,'sms','Test class')
         demo.wuphf.consent(100,True,True,True)
-        await demo.wuphf.send(client,100,'calls','Test class')
+        with pytest.raises(RuleError,match='stopped'):
+            await demo.wuphf.send(client,100,'calls','Test class') # Calls are retired.
+        await demo.wuphf.send(client,100,'sms','Test class')
         client.post.assert_not_called()
         assert not root.rows('SELECT * FROM audit')
         await bot.close()

@@ -45,3 +45,42 @@ def roast(index,store=None,uid=0):
         store.set(key,cursor+1)
     arabic, english, note = ROASTS[index % len(ROASTS)]
     return f"**{arabic}**\n||{english}||\n{note}"
+
+
+# Second-text insults. Plain ASCII on purpose: one curly quote turns a cheap SMS into three segments.
+BURNS = [
+    "Three people managed one button. You are being outperformed by a thumb.",
+    "Your phone works. We checked. The problem is you.",
+    "You left the class on read. The class noticed. The class is judging.",
+    "Even the duck has given up on you, and the duck is a cartoon.",
+    "At this rate Arabic will be a dead language before you reply.",
+    "Toddlers learn alif ba ta faster than you answer one yes-or-no question.",
+    "You are the reason this group has a telephone department.",
+    "Somewhere a pillow is very proud of you. Nobody else is.",
+    "Your streak is not the only thing in here that looks dead.",
+    "Your excuses have better attendance than you do.",
+    "A first-week student reads faster than you reply.",
+    "This is the second text. A third would waste a perfectly good insult.",
+]
+
+
+def _rotate(store, key, items):
+    cursor = store.get(key, 0)
+    store.set(key, cursor + 1)
+    return items[cursor % len(items)]
+
+
+def ascii_sms(text):
+    for fancy, plain in (("’", "'"), ("‘", "'"), ("“", '"'), ("”", '"'), ("—", "-"), ("–", "-"), ("…", "...")):
+        text = text.replace(fancy, plain)
+    return text
+
+
+def plain_roast(store, uid):
+    """English half of a classroom roast, for the first text."""
+    return ascii_sms(_rotate(store, f'roast:sms:{uid}', ROASTS)[1])
+
+
+def burn(store, uid):
+    """A harsher line for the follow-up text."""
+    return _rotate(store, f'roast:burn:{uid}', BURNS)
