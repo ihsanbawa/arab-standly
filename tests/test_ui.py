@@ -37,31 +37,32 @@ def four(store):
     for uid in range(1,5): store.member(uid,f'Member {uid}')
 
 
-def test_iqamah_not_adhan_and_fall_clock_change(state):
+def test_friday_afternoon_across_fall_clock_change(state):
     s,c=state
     first=defaults(s)['start'].astimezone(ZoneInfo(s.tz))
-    assert first.strftime('%Y-%m-%d %H:%M %Z')=='2026-10-31 07:00 CDT'
+    assert first.strftime('%Y-%m-%d %H:%M %Z')=='2026-10-30 16:00 CDT'
     c[0]=parse_local('2026-11-02 09:00',s.tz)
     second=defaults(s)['start'].astimezone(ZoneInfo(s.tz))
-    assert second.strftime('%Y-%m-%d %H:%M %Z')=='2026-11-07 06:15 CST'
+    assert second.strftime('%Y-%m-%d %H:%M %Z')=='2026-11-06 16:00 CST'
     assert fajr_slot(date(2026,11,21)).astimezone(ZoneInfo(s.tz)).strftime('%H:%M')=='06:30'
     assert first.utcoffset()!=second.utcoffset()
     assert defaults(s)['duration']==60
 
 
-def test_calendar_expiry_never_reuses_prior_year(state):
+def test_friday_schedule_continues_after_prayer_snapshot_expires(state):
     s,c=state
     c[0]=parse_local('2027-01-01 09:00',s.tz)
-    with pytest.raises(RuleError,match='No previous-year'):
-        upcoming(s)
+    assert upcoming(s)[0]==parse_local('2027-01-01 16:00',s.tz)
 
 
-def test_offset_and_next_saturday_after_class(state):
+def test_configurable_friday_hour_and_rollover(state):
     s,c=state
-    s.set('fajr_offset',30)
-    assert defaults(s)['start'].astimezone(ZoneInfo(s.tz)).strftime('%H:%M')=='07:15'
-    c[0]=parse_local('2026-10-31 08:00',s.tz)
-    assert defaults(s)['start'].astimezone(ZoneInfo(s.tz)).date()==date(2026,11,7)
+    s.set('fajr_offset',30)  # Old settings do not affect the afternoon schedule.
+    assert defaults(s)['start']==parse_local('2026-10-30 16:00',s.tz)
+    s.set('class_hour',15)
+    assert defaults(s)['start']==parse_local('2026-10-30 15:00',s.tz)
+    c[0]=parse_local('2026-10-30 15:01',s.tz)
+    assert defaults(s)['start']==parse_local('2026-11-06 15:00',s.tz)
 
 
 def test_weekly_invitation_requires_four_and_is_durable_after_cancel(state):

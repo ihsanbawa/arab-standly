@@ -149,8 +149,8 @@ class TestControls(Menu):
             from .prayer import upcoming
             from zoneinfo import ZoneInfo
             demo.check_guild(i)
-            saturday=upcoming(demo.store,1)[0].astimezone(ZoneInfo('America/Chicago')).date()
-            demo.test_clock=datetime.combine(saturday-timedelta(days=3),datetime.min.time(),ZoneInfo('America/Chicago'))+timedelta(hours=18)
+            friday=upcoming(demo.store,1)[0].astimezone(ZoneInfo('America/Chicago')).date()
+            demo.test_clock=datetime.combine(friday-timedelta(days=2),datetime.min.time(),ZoneInfo('America/Chicago'))+timedelta(hours=18)
             demo.store.set('weekly_invites',True)
             await i.response.defer()
             try: await demo.tick()
@@ -176,8 +176,8 @@ class TestControls(Menu):
             done=demo.store.one("SELECT s.* FROM sessions s JOIN lesson_notes n ON n.session_id=s.id WHERE s.status='held' ORDER BY s.start_at DESC LIMIT 1")
             if not done: raise RuleError('Add the after-class recap first, so next week has a lesson to carry forward.')
             finished=datetime.fromisoformat(done['start_at']).astimezone(ZoneInfo('America/Chicago')).date()
-            day=finished+timedelta(days=((5-finished.weekday())%7 or 7))
-            demo.test_clock=datetime.combine(day-timedelta(days=3),datetime.min.time(),ZoneInfo('America/Chicago'))+timedelta(hours=18)
+            day=finished+timedelta(days=((4-finished.weekday())%7 or 7))
+            demo.test_clock=datetime.combine(day-timedelta(days=2),datetime.min.time(),ZoneInfo('America/Chicago'))+timedelta(hours=18)
             demo.store.set('weekly_invites',True)
             await i.response.defer()
             try: await demo.tick()
@@ -354,7 +354,9 @@ async def rehearse_wuphf(demo,i):
         session=demo.store.one("SELECT * FROM sessions WHERE status='scheduled' ORDER BY start_at LIMIT 1")
         if not session:raise RuleError('Run the midweek RSVP first.')
         sid=session['id'];uid=2
-        demo.test_clock=datetime.fromisoformat(session['start_at'])-timedelta(hours=22)
+        # Use daytime hours so both phone stages can run outside quiet hours.
+        from zoneinfo import ZoneInfo
+        demo.test_clock=(datetime.fromisoformat(session['start_at']).astimezone(ZoneInfo(demo.store.tz))-timedelta(days=1)).replace(hour=10,minute=0)
         with demo.store.db:
             demo.store.db.execute('DELETE FROM rsvps WHERE session_id=? AND revision=? AND user_id=?',(sid,session['revision'],uid))
             demo.store.db.execute("DELETE FROM wuphf_jobs WHERE source='auto' AND session_id=? AND user_id=?",(sid,uid))

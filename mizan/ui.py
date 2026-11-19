@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 import discord
 
 from .core import RuleError, month_of, parse_local, stamp
-from .prayer import LOCATION, SOURCE, TIMETABLE, defaults, fajr_slot, upcoming
+from .prayer import defaults, upcoming
 
 
 RSVP_LABELS = {'coming':'I can come', 'late':'I can come', 'unavailable':"I can't", 'change':"I can't"}
@@ -121,7 +121,7 @@ async def ensure_panel(bot):
     channel = await bot.channel()
     if not channel:
         return
-    msg = await channel.send('🦆 **Shaykh Standly · Arabic Class**\nTap a button below. Saturday after Fajr at IACC · 60 minutes.\nRSVPs, rescheduling, attendance and Al-Mizan all live here.', view=Panel(bot))
+    msg = await channel.send('🦆 **Shaykh Standly · Arabic Class**\nTap a button below. Fridays at IACC · default 4 PM Dallas time · 60 minutes.\nRSVPs, rescheduling, attendance and Al-Mizan all live here.', view=Panel(bot))
     bot.store.set('panel_message_id', msg.id)
 
 
@@ -146,24 +146,10 @@ class Form(discord.ui.Modal):
 async def schedule_preview(bot, interaction, spec=None):
     bot.require_ta(interaction)
     if spec is None:
-        try:
-            spec = defaults(bot.store)
-        except RuleError:
-            async def custom(i, v):
-                await schedule_preview(bot, i, {**defaults(bot.store, parse_local(v[0], bot.store.tz)), 'topic': v[1]})
-            await interaction.response.send_modal(Form(bot, 'No verified IACC time loaded', [
-                ('Verified start · Dallas time','',True,'YYYY-MM-DD HH:MM'),
-                ('Lesson',bot.store.get('class_topic','Arabic class'),True,'')], custom))
-            return
+        spec = defaults(bot.store)
     start = spec['start']
-    day = start.astimezone(ZoneInfo('America/Chicago')).date()
-    iq = TIMETABLE['iqamah'].get(day.isoformat())
     text = (f"**Announce this class?**\n📅 {label(start)} · {spec['duration']} minutes\n"
             f"📍 {safe(spec['location'])}\n📖 {safe(spec['topic'])}\n{safe(spec['prep'])}\n")
-    if iq:
-        text += f"\n[IACC timetable]({SOURCE}): Fajr iqamah **{iq} AM**. Our default class start adds **{bot.store.get('fajr_offset',15)} minutes** for prayer; adjust if needed.\n"
-    else:
-        text += '\nCustom start time — verify with IACC.\n'
     text += f"\nRoster: **{len(bot.store.roster())}/4**. Invite everyone and use Class roster before announcing."
     view = Menu(bot)
     async def announce(i):
@@ -186,6 +172,13 @@ async def schedule_preview(bot, interaction, spec=None):
             ('Lesson / topic',spec['topic'],True,''),('Preparation',spec['prep'],False,''),
             ('Location',spec['location'],True,''),('Minutes',str(spec['duration']),True,'60')],submitted))
     view.button('Edit details',edit)
+    async def pick(i):
+        bot.require_ta(i)
+        from .datetime_picker import pick_datetime
+        async def chosen(j,dt): await schedule_preview(bot,j,{**spec,'start':dt})
+        await pick_datetime(bot,i,chosen,initial=start)
+    view.button('Pick a date & time',pick)
+
     try:
         slots=upcoming(bot.store)
     except RuleError:
@@ -193,7 +186,7 @@ async def schedule_preview(bot, interaction, spec=None):
     if slots:
         async def date_selected(i,v):
             await schedule_preview(bot,i,{**spec,'start':datetime.fromisoformat(v)})
-        view.select('Choose another Saturday',[
+        view.select('Choose another Friday',[
             discord.SelectOption(label=label(d),value=stamp(d)) for d in slots],date_selected)
     await send(interaction,text,view)
 
@@ -321,14 +314,8 @@ async def poll_preview(bot,interaction,sid,slots=None):
     bot.require_ta(interaction)
     revision=bot.store.session(sid)['revision']
     if slots is None:
-        # Two future weekends, plus a Sunday option when available in the source.
-        sats=upcoming(bot.store,2)
-        slots=list(sats)
-        sunday=sats[0].astimezone(ZoneInfo('America/Chicago')).date()+timedelta(days=1)
-        try: slots.append(fajr_slot(sunday,bot.store.get('fajr_offset',15)))
-        except RuleError: pass
-        slots=sorted(set(slots))
-    if len(slots)<2: raise RuleError('Choose at least two custom future times; the verified calendar ends this year.')
+        slots=upcoming(bot.store,3)
+    if len(slots)<2: raise RuleError('Choose at least two future replacement times.')
     view=Menu(bot)
     async def post(i):
         bot.require_ta(i)
@@ -339,7 +326,8 @@ async def poll_preview(bot,interaction,sid,slots=None):
     view.button('Post availability poll',post,style=discord.ButtonStyle.success)
     async def edit(i):
         async def submitted(j,v):
-            await poll_preview(bot,j,sid,[parse_local(x,bot.store.tz) for x in v if x.strip()])
+            from .datetime_picker import parse_suggestion
+            await poll_preview(bot,j,sid,[parse_suggestion(x,bot.store) for x in v if x.strip()])
         values=[d.astimezone(ZoneInfo('America/Chicago')).strftime('%Y-%m-%d %H:%M') for d in slots]
         await i.response.send_modal(Form(bot,'Alternative times · Dallas',[(f'Option {n+1}',values[n] if n<len(values) else '',n<2,'YYYY-MM-DD HH:MM') for n in range(3)],submitted))
     view.button('Edit alternatives',edit)
@@ -409,11 +397,13 @@ async def settings_menu(bot,interaction):
         bot.store.set('weekly_invites',not bot.store.get('weekly_invites',True))
         await settings_menu(bot,i)
     view.button('Pause weekly invites' if bot.store.get('weekly_invites',True) else 'Enable weekly invites',weekly)
-    async def offset(i,v):
+    async def class_hour(i,v):
         bot.require_ta(i)
-        bot.store.set('fajr_offset',int(v))
-        await send(i,f'Future new classes will start {v} minutes after IACC Fajr iqamah. Existing invitations keep their announced time.')
-    view.select('Time after iqamah',[discord.SelectOption(label=f'{v} minutes after Fajr iqamah',value=str(v),default=v==bot.store.get('fajr_offset',15)) for v in [10,15,20,30]],offset)
+        bot.store.set('class_hour',int(v))
+        await settings_menu(bot,i)
+    view.select('Friday class time · Dallas',[
+        discord.SelectOption(label=f'{v-12} PM',value=str(v),default=v==bot.store.get('class_hour',16))
+        for v in [15,16,17]],class_hour)
     for title,action in [('Status','status'),('Send WUPHF','wuphf'),('Beeminder checks','beeminder'),('Export records','export'),('Use this channel','setup')]:
         async def clicked(i,a=action): await route(bot,i,a)
         view.button(title,clicked)
@@ -426,7 +416,8 @@ async def settings_menu(bot,interaction):
             ('Current lesson',bot.store.get('class_topic','Arabic class · continue our current lesson'),True,''),
             ('Preparation',bot.store.get('class_prep','Bring all three books.'),False,'')],submitted))
     view.button('Default lesson / prep',lesson)
-    await send(interaction,f"**Class settings**\nWednesday 6 PM invitations: {'ON (waiting for four roster members)' if bot.store.get('weekly_invites',True) and len(bot.store.roster())!=4 else 'ON' if bot.store.get('weekly_invites',True) else 'paused'}.\nSaturday · IACC · 60 minutes · iqamah + {bot.store.get('fajr_offset',15)} minutes.\n[Official calendar]({SOURCE}) loaded for Oct–Dec 2026; later dates require a verified timetable or custom time. Existing invitations never silently change.",view)
+    await send(interaction,f"**Class settings**\nWednesday 6 PM invitations: {'ON (waiting for four roster members)' if bot.store.get('weekly_invites',True) and len(bot.store.roster())!=4 else 'ON' if bot.store.get('weekly_invites',True) else 'paused'}.\nFriday · {bot.store.get('class_hour',16)-12} PM Dallas time · IACC · 60 minutes.\nExisting invitations keep their announced times; use replacement suggestions to move them with everyone’s agreement.",view)
+
 
 
 async def route(bot,interaction,action,**kwargs):

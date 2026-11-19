@@ -78,7 +78,7 @@ async def rsvp(bot, uid, coming):
     penalty = bot.store.answer(sid, uid, coming, revision)
     await bot.update_card(sid)
     if coming:
-        return f"Saved: you're coming to class #{sid}. See you after Fajr."
+        return f"Saved: you're coming to class #{sid}. See you at class."
     await bot.notify_once(
         f'decline:{sid}:{revision}:{uid}:{penalty["points"]}',
         f"<@{uid}> can't make class (answered by text). **Al-Mizan {penalty['points']}**. They need to suggest "
