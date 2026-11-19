@@ -21,7 +21,7 @@ from .content import NUDGE, RESOURCES, roast
 from .core import RuleError, Store, month_of, parse_local, stamp
 from .wuphf import Wuphf
 from . import ui, consensus, progress
-from .prayer import SOURCE, TIMETABLE, ensure_weekly
+from .prayer import ensure_weekly
 
 log = logging.getLogger("mizan")
 
@@ -221,10 +221,6 @@ class MizanBot(discord.Client):
             value="\n".join(f"[{name}]({url})" for name, url in RESOURCES[:2]),
             inline=False,
         )
-        local_start = datetime.fromisoformat(s['start_at']).astimezone(ZoneInfo('America/Chicago'))
-        iq = TIMETABLE['iqamah'].get(local_start.date().isoformat())
-        if iq:
-            embed.add_field(name='Fajr at IACC', value=f"[Official timetable]({SOURCE}): iqamah {iq} AM. Class starts at the time above, after prayer.", inline=False)
         embed.set_footer(
             text=f"In person · {s['duration']} minutes · Revision {s['revision']} · Time moves automatically when all four agree"
         )
@@ -522,7 +518,7 @@ class MizanBot(discord.Client):
         if len(self.store.roster()) != 4:
             await self.notify_once(
                 'roster-needed',
-                'TA: use **Class roster** on the control panel to select the four participants. Weekly Saturday invitations start automatically once all four are registered.',
+                'TA: use **Class roster** on the control panel to select the four participants. Weekly Friday invitations start automatically once all four are registered.',
             )
         if (
             self.bee.configured()
@@ -587,7 +583,7 @@ def register_commands(bot):
         store.set("ta_role_id", ta_role.id if ta_role else None)
         store.set("timezone", "America/Chicago")
         await interaction.response.send_message(
-            "Configured: Saturday after Fajr congregation, 60 minutes, IACC Plano, Dallas time. Use Class roster to select four people; Saturday invitations then start automatically using IACC Fajr iqamah + 15 minutes. Change this in Status & settings.",
+            "Configured: Friday at 4 PM, 60 minutes, IACC Plano, Dallas time. Use Class roster to select four people; Friday invitations then start automatically at 4 PM Dallas time. Change this in Status & settings.",
             ephemeral=True,
         )
 
@@ -602,13 +598,13 @@ def register_commands(bot):
             ephemeral=True,
         )
 
-    @tree.command(description="Preview next Saturday after IACC Fajr; defaults filled, tap to announce")
+    @tree.command(description="Preview next Friday at 4 PM at IACC; defaults filled, tap to announce")
     async def schedule(
         interaction: discord.Interaction,
         start: str | None = None,
         topic: str = "Arabic class · continue our current lesson",
         prep: str = "",
-        location: str = "IACC Plano · after Fajr congregation",
+        location: str = "IACC Plano",
         duration: int = 60,
         rsvp_deadline: str | None = None,
     ):
@@ -815,7 +811,7 @@ def register_commands(bot):
         await interaction.response.send_message(
             "**Class status**\n"
             + ("\n".join(lines) or "No open classes.")
-            + f"\nRoster: {len(store.roster())}\nBeeminder: {'enabled' if bot.bee.configured() else 'not activated'}\nWUPHF: {'configured; automatic RSVP escalation' if os.getenv('TWILIO_ACCOUNT_SID') else 'not configured'}\nSchedule: Saturday after Fajr congregation, IACC Plano. Weekly invitations use the official IACC timetable, plus an adjustable after-prayer allowance. Use /standly for buttons.",
+            + f"\nRoster: {len(store.roster())}\nBeeminder: {'enabled' if bot.bee.configured() else 'not activated'}\nWUPHF: {'configured; automatic RSVP escalation' if os.getenv('TWILIO_ACCOUNT_SID') else 'not configured'}\nSchedule: Friday at {store.get('class_hour',16)-12} PM Dallas time, IACC Plano. Weekly invitations go out Wednesday at 6 PM Dallas time; choose 3, 4 or 5 PM in TA settings. Use /standly for buttons.",
             ephemeral=True,
         )
 

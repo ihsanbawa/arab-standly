@@ -1,11 +1,11 @@
 # Shaykh Standly · ⚖️ Al-Mīzān
 
-A Discord bot for a four-person **in-person** Arabic class. Coordinates Saturday classes after Fajr congregation at **IACC, Plano**, collects commitments, reschedules with polls, keeps monthly scores, and offers group-authorised WUPHF phone nudges.
+A Discord bot for a four-person **in-person** Arabic class. Coordinates Friday classes at 4 PM Dallas time at **IACC, Plano**, collects commitments, reschedules with polls, keeps monthly scores, and offers group-authorised WUPHF phone nudges.
 
 ## Included
 
 - A persistent button panel: schedule, RSVP, class controls, scores, links, roster, WUPHF for any server member and TA settings. Five essential slash commands; structured menus guide any remaining choices.
-- Automatic Wednesday 6 PM (Dallas time) RSVP invitations for Saturday, once the four-person roster is registered.
+- Automatic Wednesday 6 PM (Dallas time) RSVP invitations for Friday, once the four-person roster is registered.
 - Exactly two RSVP buttons: **I can come / I can’t**. Declines require a replacement suggestion, automatically open or extend a group availability poll, and apply one Al-Mizan deduction.
 - After-class TA recap prompt; completed lesson, next lesson and preparation carry into the following invitation.
 - Class announcement cards with physical location, topic, preparation, RSVP deadline, and Quizlet links.
@@ -51,7 +51,7 @@ cp .env.example .env
 ## Everyday flow
 
 1. Use the permanent **Shaykh Standly** panel or `/standly`. Invite the four people, then select them with **More → Class roster**.
-2. Every **Wednesday at 6 PM America/Chicago**, the bot announces Saturday’s class at IACC after Fajr. If setup happens later in the week it catches up. It uses verified IACC iqamah + an adjustable 15 minutes, for a 60-minute class.
+2. Every **Wednesday at 6 PM America/Chicago**, the bot announces Friday’s class at IACC at 4 PM Dallas time. If setup happens later in the week it catches up. The default is 4 PM, adjustable to 3 or 5 PM in TA settings, for a 60-minute class.
 3. The class card has exactly **I can come / I can’t**. No separate late/change/report controls on that invitation. TA actions remain on the main panel and post-class prompt.
 4. **I can’t** records −1 (−2 within 24 hours), immediately opens a replacement-time picker, and posts a curated Arabic roast. Select all workable suggested dates and tap **Suggest selected times**, or enter up to three custom Dallas date/times. The selected batch is saved atomically and posted as one shared poll. The bot automatically posts an availability poll and marks the proposer available. Subsequent suggestions extend the same open poll without erasing existing votes, up to three alternatives. Closing the picker leaves a visible pending suggestion; the bot nudges them after 12 hours. No one can propose on behalf of another member outside Test mode.
 5. One shared rescheduling card shows up to three proposed times, each with all four names and ✅ available / ❌ unavailable / ⏳ unanswered. **Update my availability** opens a private multi-select menu: select every workable time and **Save availability**, or choose **None work for me**. Saving records all displayed options atomically. Nothing changes while selecting. New suggestions preserve prior answers and add an unanswered option; a ballot opened before a new suggestion must be reopened before saving. The proposer is automatically available for their suggestion. As soon as all four approve a time, it locks automatically and becomes the class's four RSVPs. If several qualify together, the earliest wins. No TA approval or override exists. Once everyone answers every option without agreement, or the deadline expires, a fresh suggestion round opens. None-work answers immediately offer another time and leave a pending reminder if abandoned. Replacement votes incur no additional deduction. Only the strongest original disruption deduction counts per person/class.
@@ -88,13 +88,13 @@ Every class card uses ✅ coming/present, ❌ unavailable/absent, ⏳ unanswered
 
 The private **#shaykh-debug** channel must deny View Channel to @everyone and allow the owner and bot. The bot discovers it by name on startup and posts a separate test panel. Test mode refuses to start in the member channel; ordinary commands used in the debug channel route to an isolated test bot/store. The live class panel contains no test button. Existing private ephemeral test messages from earlier versions were visible only to their creator.
 
-### Prayer-relative schedule
+### Friday schedule and easy replacement times
 
-The bundled snapshot comes from the [official 2026 IACC timetable](https://planomasjid.org/wp-content/uploads/2025/12/IACC-Prayer-Timings-2026.pdf), verified October 30, 2026, for October–December 2026. It uses the **second time under Fajr (iqamah)**, not adhan. Source URL, verification date and source PDF hash are retained in `mizan/iacc_2026.json`.
+New classes default to **Friday at 4 PM, 60 minutes at IACC Plano**, in `America/Chicago` (Dallas time, with daylight saving handled automatically). TA settings offer **3 / 4 / 5 PM** for future new invitations. Wednesday 6 PM invitations require exactly four active roster members and can be paused. Existing invitations keep their announced time; moving one still requires agreement from all four. Persistent weekly deduplication prevents a second invitation after a move, cancellation or restart, including invitations created under the former Saturday schedule.
 
-Timezone is `America/Chicago`, including the November clock change. New classes default to **Saturday, iqamah + 15 minutes, 60 minutes at IACC Plano**. The 15 minutes is an adjustable class-planning allowance, not a published prayer end time. Settings offer 10/15/20/30 minutes; existing invitations never silently move. Examples: October 31 iqamah 06:45 CDT → class 07:00; November 7 iqamah 06:00 CST → class 06:15; November 21 iqamah 06:15 CST → class 06:30.
+**I can’t → Pick a date & time** opens a private calendar with previous/next month navigation and day menus. Choose any date, then an hour/minute or quick **3 / 4 / 5 PM**. **Type dates / times** accepts `Friday at 4pm`, `tomorrow 3:30pm`, `Nov 27 2026 4pm`, or `2026-11-27 16:00`; weekdays mean the next occurrence (today if the time is still ahead). Named dates without a year mean the next occurrence. Use AM/PM or 24-hour `HH:MM` to avoid ambiguous hours. All times are Dallas time. ISO timestamps with explicit offsets remain supported for ambiguous daylight-saving times.
 
-A new verified timetable must be loaded before 2027. The bot alerts the TA and refuses to reuse old-year times. A TA can still enter a verified custom time through the scheduling form. Wednesday 6 PM invitations require exactly four active roster members and can be paused in TA settings. It creates one regular invitation for each Saturday's week, with persistent deduplication, and retries an unposted invitation after a restart without creating a second class. Scores and financial credit are never inferred from creating an invitation.
+Picker and typed entries update a private draft. Add or deselect up to three options, review them, then **Suggest selected times** to publish. **Clear draft** starts again; **Back to suggestions** preserves the draft. The same date/time picker is available when scheduling a new class. The old verified prayer snapshot remains available for historical lookup; weekly invitations no longer depend on it or expire at year end. Scores and financial credit are never inferred from creating an invitation.
 
 ### Commands and controls
 
@@ -154,7 +154,7 @@ A single **public Al-Mizan board** in the configured class channel shows the mon
 
 ### Private Arabic welcome
 
-With **Server Members Intent** enabled in Discord Developer Portal and `WELCOME_ON_JOIN=true`, each human member receives one private DM explaining the Arabic greeting, Saturday/Fajr class, RSVP and unanimous rescheduling, Al-Mizan, attendance, resources and optional phone nudges. Existing members receive it once on first enabled startup. Delivery markers persist across restarts and rejoining, and bots/other guilds are ignored. If Discord blocks DMs, no public welcome is substituted; the member can use **Welcome / how it works** or `/welcome` for a private copy. Welcome does not register someone in the class roster or opt them into WUPHF.
+With **Server Members Intent** enabled in Discord Developer Portal and `WELCOME_ON_JOIN=true`, each human member receives one private DM explaining the Arabic greeting, Friday/4 PM class, RSVP and unanimous rescheduling, Al-Mizan, attendance, resources and optional phone nudges. Existing members receive it once on first enabled startup. Delivery markers persist across restarts and rejoining, and bots/other guilds are ignored. If Discord blocks DMs, no public welcome is substituted; the member can use **Welcome / how it works** or `/welcome` for a private copy. Welcome does not register someone in the class roster or opt them into WUPHF.
 
 `CLASS_CHANNEL_ID` can move the live class destination to #general. The bot preserves scores/rosters/audit history and recreates live controls there once. Archive the old channel in Discord without deleting its history; private rehearsals remain in #shaykh-debug.
 

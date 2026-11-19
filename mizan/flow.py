@@ -1,9 +1,8 @@
 """Two-button RSVP, required replacement suggestions, and weekly lesson handoff."""
 from datetime import datetime,timedelta
-from zoneinfo import ZoneInfo
 import discord
-from .core import RuleError,stamp,parse_local
-from .prayer import upcoming,fajr_slot
+from .core import RuleError,stamp
+from .prayer import upcoming
 from .ui import Menu,Form,label,safe,send,guard_context
 from .content import roast
 
@@ -33,7 +32,7 @@ async def respond(bot,i,sid,uid,coming,revision):
         if hasattr(bot,'demo_owner'):
             from .testing import simulated_rsvp
             return await simulated_rsvp(bot,i,sid,uid,'Saved: I can come.')
-        await send(i,'✅ You’re coming. See you after Fajr at IACC.')
+        await send(i,'✅ You’re coming. See you at IACC.')
     else:
         await suggest_menu(bot,i,sid,uid,revision)
         await bot.notify_once(f'decline:{sid}:{revision}:{uid}:{penalty["points"]}',
@@ -54,9 +53,7 @@ async def suggest_menu(bot,i,sid,uid,revision):
     poll=bot.store.one("SELECT id FROM polls WHERE session_id=? AND revision=? AND status='open' AND deadline>? ORDER BY id DESC LIMIT 1",(sid,revision,stamp(bot.store.clock())))
     if poll: options.extend(datetime.fromisoformat(x) for x in bot.store.poll(poll['id'])['options'])
     try:
-        sats=upcoming(bot.store,3)
-        options+=sats
-        options.append(fajr_slot(sats[0].astimezone(ZoneInfo('America/Chicago')).date()+timedelta(days=1),bot.store.get('fajr_offset',15)))
+        options+=upcoming(bot.store,3)
     except RuleError: pass
     options=sorted({x for x in options if x>bot.store.clock()+timedelta(minutes=5) and stamp(x)!=s['start_at']})[:20]
     view=ReplacementTimes(bot,sid,uid,revision,options)
@@ -80,13 +77,34 @@ class ReplacementTimes(Menu):
             self.add_item(select)
             async def save(i): await submit_suggestions(bot,i,sid,uid,revision,self.selected)
             self.button('Suggest selected times',save,style=discord.ButtonStyle.success)
+        async def show_draft(i,times):
+            times=list(dict.fromkeys(times))
+            if len(times)>3: raise RuleError('Suggest up to three times. Clear the draft to start again.')
+            # Include custom picks in the menu so users can remove them too.
+            all_options=sorted(set(options+times))[:25]
+            draft=ReplacementTimes(bot,sid,uid,revision,all_options)
+            draft.selected=list(dict.fromkeys(times))
+            for child in draft.children:
+                if isinstance(child,discord.ui.Select):
+                    for option in child.options: option.default=datetime.fromisoformat(option.value) in draft.selected
+            await send(i,'**Your draft replacement times**\n'+('\n'.join('• '+label(dt) for dt in draft.selected) or 'No times selected.')+'\nAdd up to three, or change the selection below. Tap Suggest selected times to ask the group.',draft)
+        async def calendar_pick(i):
+            from .datetime_picker import pick_datetime
+            async def chosen(j,dt): await show_draft(j,self.selected+[dt])
+            async def back(j): await show_draft(j,self.selected)
+            await pick_datetime(bot,i,chosen,back=back)
+        self.button('Pick a date & time',calendar_pick,style=discord.ButtonStyle.primary)
         async def custom(i):
+            from .datetime_picker import parse_suggestion
             async def submitted(j,values):
-                times=self.selected+[parse_local(v,bot.store.tz) for v in values if v.strip()]
-                await submit_suggestions(bot,j,sid,uid,revision,times)
-            await i.response.send_modal(Form(bot,'Other replacement times · Dallas',[
-                ('Time 1','',True,'YYYY-MM-DD HH:MM'),('Time 2 (optional)','',False,'YYYY-MM-DD HH:MM'),('Time 3 (optional)','',False,'YYYY-MM-DD HH:MM')],submitted))
-        self.button('Other dates / times',custom)
+                times=self.selected+[parse_suggestion(v,bot.store) for v in values if v.strip()]
+                await show_draft(j,times)
+            await i.response.send_modal(Form(bot,'Replacement times · Dallas',[
+                ('Time 1','',True,'Friday 4pm / tomorrow 3:30pm'),('Time 2 (optional)','',False,'Nov 27 4pm'),('Time 3 (optional)','',False,'YYYY-MM-DD HH:MM')],submitted))
+        self.button('Type dates / times',custom)
+        async def clear(i): await show_draft(i,[])
+        self.button('Clear draft',clear)
+
 
 
 async def submit_suggestion(bot,i,sid,uid,revision,dt):
