@@ -10,7 +10,7 @@ A Discord bot for a four-person **in-person** Arabic class. Coordinates Friday c
 - After-class TA recap prompt; completed lesson, next lesson and preparation carry into the following invitation.
 - Class announcement cards with physical location, topic, preparation, RSVP deadline, and Quizlet links.
 - Persistent RSVP and shared availability controls; they work after restarts.
-- One private RSVP nudge, one optional automatic text, and a one-hour reminder only after all four agree. Repeated daily recap/suggestion posts and public automatic-text roasts are removed.
+- One private RSVP nudge, one optional automatic text, and a one-hour reminder only after all four agree. Public reminder roasts are batched, with at most two per class. Repeated daily recap/suggestion posts are removed.
 - Unanimous rescheduling: the earliest time explicitly approved by all four locks automatically. Votes for that time become new RSVPs; other old responses never carry over.
 - Trust-based attendance: no routine roll call if everyone accepted. TA confirms class actually happened after its scheduled end; accepted participants count as present unless exceptions were recorded.
 - Disruption reports from participants. Reporter is never automatically blamed or deducted.
@@ -22,7 +22,7 @@ A Discord bot for a four-person **in-person** Arabic class. Coordinates Friday c
 - Shared minimum of two classes per calendar month, at-risk alerts, unresolved-makeup reminders.
 - Private record export, restricted TA commands, audit trail, persistent SQLite storage.
 - Beeminder **group** monthly-compliance adapter, disabled until configured. See [BEEMINDER.md](BEEMINDER.md).
-- Automatic Discord → one private text RSVP reminder; RSVP by replying YES/NO to the text; roster-only, explicitly requested `/wuphf @person` retains its two-text sequence. Personal stop/resume, quiet hours, cooldown and daily limits remain.
+- Automatic Discord → one text RSVP reminder with a batched public roast; RSVP by replying YES/NO to the text; roster-only, explicitly requested `/wuphf @person` retains its two-text sequence. Personal stop/resume, quiet hours, cooldown and daily limits remain.
 
 The book-based learning assistant, automated grading, and Quizlet completion tracking are **not included** in this first version. The two supplied Quizlet links are included as resources.
 
@@ -118,7 +118,7 @@ Set `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, and `TWILIO_PHONE_NUMBER` private
 
 Phone nudges use the group’s agreed permission by default for privately configured recipients. No **My nudges** menu or opt-in step is required. `/stopnudges` stops all phone nudges to the requesting member and cancels pending jobs. `/resumenudges` resumes future jobs, retaining 9 PM–8 AM Dallas quiet hours. Existing explicit stop preferences are respected.
 
-**Automatic unanswered RSVP reminders:** only the active plan sends reminders. Everyone gets at least 24 hours after invitation/revision before an overdue nudge, even for legacy invitations with a one-minute deadline. A private Discord DM is attempted once; blocked DMs produce one combined public request rather than four posts. A text is queued two hours later for unanswered RSVPs, subject to quiet hours/caps, and is sent at most once per class/revision/person by default. Automatic texts produce no public roast posts. Any RSVP stops that person's texts; a decline stops original-time RSVP texts for everyone while the group finds a new time. Switching active plans, skipping, pausing automation, a changed revision, removed participant, hiatus, or class starting stops pending jobs. Old queued follow-ups are retired without another send. The internal `auto_sms_followup` compatibility setting can explicitly enable a second automatic text, but is off by default and is not enabled by deployment.
+**Automatic unanswered RSVP reminders:** only the active plan sends reminders. Everyone gets at least 24 hours after invitation/revision before an overdue nudge, even for legacy invitations with a one-minute deadline. A private Discord DM is attempted once; blocked DMs produce one combined public request rather than four posts. A text is queued two hours later for unanswered RSVPs, subject to quiet hours/caps, and is sent at most once per class/revision/person by default. After automatic texts go out, the bot posts one combined public Arabic roast (with English translation/vocabulary), mentioning only texted members who still have not answered. One final combined roast may follow at least 24 hours after the first successful post, if unanswered members remain. **Maximum two automatic public roast posts per class**, shared across revisions and restarts; later texts never create extra individual posts. The final public roast does not send another SMS. Quiet hours (9 PM–8 AM Dallas time) apply to these group posts, and recipients are rechecked immediately before posting. A reserved Discord send is not retried after a timeout/restart, favoring fewer posts over a possible duplicate. Any RSVP stops that person's texts; a decline stops original-time RSVP texts for everyone while the group finds a new time. Switching active plans, skipping, pausing automation, a changed revision, removed participant, hiatus, or class starting stops pending jobs. Old queued follow-ups are retired without another send. The internal `auto_sms_followup` compatibility setting can explicitly enable a second automatic text, but is off by default and is not enabled by deployment.
 
 **Less public noise:** there is no day-before start announcement. The one-hour reminder requires all four to be marked coming. Recap and replacement-suggestion prompts occur at most once per active class/revision, rather than daily; conflict state is shown on the card instead of a duplicate conflict post.
 
@@ -126,7 +126,7 @@ Phone nudges use the group’s agreed permission by default for privately config
 
 All phone sends share a one-hour recipient cooldown, three-attempt local daily limit and quiet hours. Queues wait for permissible hours/capacity. Jobs and timestamps survive deployment. A provider timeout/error is terminal and surfaces for review; a restart during a provider request does not retry or advance to the follow-up text. There is no repeat loop.
 
-**Test mode:** Streaks & danger tests → advanced tools → **Test automatic WUPHF** rehearses Discord, one automatic text, no second automatic text, and cancellation with a fake clock and mocked phone provider. No real number is contacted.
+**Test mode:** Streaks & danger tests → advanced tools → **Test automatic WUPHF** rehearses Discord, one automatic text, batched public roasts, no second automatic text, and cancellation with a fake clock and mocked phone provider. No real number is contacted.
 
 **RSVP by text (for members whose Discord buttons do not appear):** give the Railway service a public domain, set `TWILIO_WEBHOOK_URL` to `https://<that-domain>/twilio/sms`, and enter the same URL in the Twilio console under the phone number’s **Messaging → A message comes in** webhook (HTTP POST). Members can then reply to any text from the bot:
 

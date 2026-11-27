@@ -94,7 +94,8 @@ def test_late_invite_has_a_day_to_answer_and_legacy_jobs_obey_grace(world):
         c[0]+=timedelta(hours=2)
         await process(bot)
         assert bot.wuphf.send.await_count==1
-        bot.notify.assert_not_called()
+        assert bot.notify.await_count==1
+        assert 'RSVP department' in bot.notify.call_args.args[0]
         await bot.close()
     asyncio.run(run())
 
@@ -257,5 +258,124 @@ def test_skip_control_is_confirmed_and_ta_only(world):
         await view.children[0].callback(interaction())
         assert s.session(sid)['status']=='skipped'
         assert s.active_class() is None
+        await bot.close()
+    asyncio.run(run())
+
+
+def test_balanced_roasts_batch_all_texts_then_final_next_day_and_cap_after_revision(world):
+    s,c=world;sid=create(s,'2026-12-04 16:00')
+    async def run():
+        bot=fake_bot(s)
+        for uid in range(1,5): enqueue_auto(bot,s.session(sid),uid)
+        c[0]=parse_local('2026-12-02 18:00',s.tz)
+        await process(bot);await process(bot)
+        assert bot.wuphf.send.await_count==4
+        assert bot.notify.await_count==1
+        first=bot.notify.call_args.args[0]
+        assert all(f'<@{uid}>' in first for uid in range(1,5))
+        assert 'Class #'+str(sid) in first and 'Dec 04' in first
+        assert '||' in first  # One shared Arabic/English roast.
+        s.answer(sid,1,True,0)
+        c[0]+=timedelta(hours=23)
+        await process(bot);assert bot.notify.await_count==1
+        c[0]+=timedelta(hours=1)
+        await process(bot);await process(bot)
+        assert bot.notify.await_count==2
+        final=bot.notify.call_args.args[0]
+        assert 'Final RSVP reminder' in final and '<@1>' not in final
+        assert all(f'<@{uid}>' in final for uid in [2,3,4])
+        assert bot.wuphf.send.await_count==4  # Public follow-up adds no private SMS.
+        # A new round/revision is still this same class, not a fresh public-post budget.
+        with s.db:
+            s.db.execute('UPDATE sessions SET revision=1 WHERE id=?',(sid,))
+            s.db.execute("UPDATE wuphf_jobs SET revision=1 WHERE session_id=?",(sid,))
+        c[0]+=timedelta(hours=12)
+        await process(bot)
+        assert bot.notify.await_count==2
+        await bot.close()
+    asyncio.run(run())
+
+
+def test_balanced_roasts_persist_budget_across_restart(world):
+    s,c=world;sid=create(s,'2026-12-04 16:00')
+    async def run():
+        bot=fake_bot(s);enqueue_auto(bot,s.session(sid),1)
+        c[0]=parse_local('2026-12-02 18:00',s.tz)
+        await process(bot)
+        path=s.db.execute('PRAGMA database_list').fetchone()[2]
+        reopened=Store(path,clock=lambda:c[0]);other=fake_bot(reopened)
+        await process(other);other.notify.assert_not_called()
+        c[0]+=timedelta(days=1)
+        await process(other);await process(other)
+        assert other.notify.await_count==1 and 'Final RSVP' in other.notify.call_args.args[0]
+        await bot.close();await other.close();reopened.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('action',['answered','declined','skipped','paused','other_plan','started'])
+def test_balanced_final_roast_stops_when_no_longer_actionable(world,action):
+    s,c=world;sid=create(s,'2026-12-04 16:00')
+    async def run():
+        bot=fake_bot(s)
+        for uid in [1,2]: enqueue_auto(bot,s.session(sid),uid)
+        c[0]=parse_local('2026-12-02 18:00',s.tz)
+        await process(bot);assert bot.notify.await_count==1
+        if action=='answered':
+            for uid in [1,2]: s.answer(sid,uid,True,0)
+        elif action=='declined': s.answer(sid,3,False,0)
+        elif action=='skipped': s.skip_class(sid,1)
+        elif action=='paused': s.set('automation_paused',True)
+        elif action=='other_plan': create(s,'2026-12-11 16:00')
+        c[0]=parse_local('2026-12-04 17:00' if action=='started' else '2026-12-03 18:00',s.tz)
+        await process(bot)
+        assert bot.notify.await_count==1
+        await bot.close()
+    asyncio.run(run())
+
+
+def test_balanced_roast_rechecks_responses_after_sms_and_batches_staggered_delivery(world):
+    s,c=world;sid=create(s,'2026-12-04 16:00')
+    async def run():
+        bot=fake_bot(s)
+        for uid in [1,2]: enqueue_auto(bot,s.session(sid),uid)
+        c[0]=parse_local('2026-12-02 18:00',s.tz)
+        async def sent(client,uid,*args):
+            if uid==1: s.answer(sid,1,True,0)
+        bot.wuphf.send.side_effect=sent
+        await process(bot)
+        text=bot.notify.call_args.args[0]
+        assert '<@1>' not in text and '<@2>' in text
+        enqueue_auto(bot,s.session(sid),3)
+        c[0]+=timedelta(hours=2)
+        await process(bot)
+        assert bot.notify.await_count==1  # A later delivery does not open another batch.
+        await bot.close()
+    asyncio.run(run())
+
+
+def test_balanced_public_roasts_wait_for_daytime(world):
+    s,c=world;sid=create(s,'2026-12-04 16:00')
+    async def run():
+        bot=fake_bot(s);enqueue_auto(bot,s.session(sid),1)
+        c[0]=parse_local('2026-12-02 22:00',s.tz)
+        await process(bot)
+        assert bot.wuphf.send.await_count==1  # Mock provider permits this; group posts stay quiet.
+        bot.notify.assert_not_called()
+        c[0]=parse_local('2026-12-03 08:00',s.tz)
+        await process(bot);assert bot.notify.await_count==1
+        await bot.close()
+    asyncio.run(run())
+
+
+def test_uncertain_public_send_is_not_retried_or_followed_up(world):
+    s,c=world;sid=create(s,'2026-12-04 16:00')
+    async def run():
+        bot=fake_bot(s);enqueue_auto(bot,s.session(sid),1)
+        bot.notify.side_effect=TimeoutError('Discord may have accepted this message')
+        c[0]=parse_local('2026-12-02 18:00',s.tz)
+        await process(bot);await process(bot)
+        c[0]+=timedelta(days=1);await process(bot)
+        assert bot.notify.await_count==1
+        assert bot.wuphf.send.await_count==1
         await bot.close()
     asyncio.run(run())

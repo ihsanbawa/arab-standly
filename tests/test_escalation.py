@@ -50,8 +50,9 @@ def test_opt_in_auto_followup_two_hours_after_actual_text(world):
             assert sms_fits(SMS_PREFIX+text+SMS_STOP)
         assert first[3].split('\n')[1]!=second[3].split('\n')[1]
         assert s.one('SELECT state FROM wuphf_jobs WHERE id=?',(jid,))['state']=='done'
-        # Automatic texts never generate parallel public roast posts.
-        bot.notify.assert_not_called()
+        # Both SMS stages share one group post; another public roast waits a full day.
+        assert bot.notify.await_count==1
+        assert 'RSVP department' in bot.notify.call_args.args[0]
         await bot.close()
     asyncio.run(run())
 
