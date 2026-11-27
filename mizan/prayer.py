@@ -45,10 +45,15 @@ def defaults(store, start=None):
 
 def ensure_weekly(store):
     """One regular invitation per Friday, even after a move/cancel/restart."""
-    if not store.get('weekly_invites', True) or len(store.roster()) != 4:
+    if store.get('automation_paused',False) or not store.get('weekly_invites', True) or len(store.roster()) != 4:
         return None
+    active=store.active_class()
+    if active:
+        return active['id']  # A future manual date or unfinished class blocks all new weekly invites.
     dt = upcoming(store, 1)[0]
     day = dt.astimezone(ZoneInfo('America/Chicago')).date()
+    if store.get(f'weekly_skip:{day.isoformat()}',False):
+        return None
     check_in = datetime.combine(day-timedelta(days=2), datetime.min.time(), ZoneInfo('America/Chicago'))+timedelta(hours=18)
     if store.clock()<check_in:
         return None

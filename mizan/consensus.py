@@ -6,6 +6,7 @@ from .core import RuleError,stamp
 
 def winner(store,pid):
     p=store.poll(pid);s=store.session(p['session_id'])
+    if not store.is_active(s['id']): return None
     if p['status']!='open' or s['revision']!=p['revision'] or store.clock()>=datetime.fromisoformat(p['deadline']): return None
     ids={m['user_id'] for m in store.participants(s['id'])}
     if len(ids)!=4: return None
@@ -48,6 +49,7 @@ def finish_round(store,pid):
 
 
 async def update(bot,pid):
+    bot.store.require_active(bot.store.poll(pid)['session_id'])
     settle(bot.store,pid)
     await flush(bot)
     closed=finish_round(bot.store,pid)
@@ -68,6 +70,7 @@ async def flush(bot):
 async def _flush(bot):
     for move in bot.store.rows('SELECT * FROM auto_moves WHERE announced=0 ORDER BY poll_id'):
         sid=move['session_id']
+        if not bot.store.is_active(sid): continue
         await bot.update_card(sid)
         await bot.update_poll(move['poll_id'])
         await bot.confirmed_card(sid,move['poll_id'])

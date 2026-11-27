@@ -192,9 +192,13 @@ def test_scheduler_does_not_repeat_reminders_or_award_from_rsvp(fixture, monkeyp
         bot.notify = notify
         await bot.tick()
         await bot.tick()
-        assert len([x for x in messages if "Class within 24 hours" in x]) == 1
+        assert not [x for x in messages if "Class within 24 hours" in x]
+        c[0]+=timedelta(hours=22)
+        await bot.tick()
+        await bot.tick()
+        assert len([x for x in messages if "Class starts within an hour" in x])==1
         assert s.monthly_count("2026-10") == 0
-        c[0] += timedelta(hours=25)
+        c[0] += timedelta(hours=3)
         await bot.tick()
         await bot.tick()
         assert len([x for x in messages if "did class" in x]) == 1

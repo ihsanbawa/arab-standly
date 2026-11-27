@@ -203,7 +203,7 @@ def test_test_errors_offer_test_controls_without_live_status(root):
     asyncio.run(run())
 
 
-def test_automatic_wuphf_rehearsal_runs_both_stages_without_external_delivery(root):
+def test_automatic_wuphf_rehearsal_sends_one_text_without_external_delivery(root):
     from mizan.testing import rehearse_wuphf
     async def run():
         bot=MizanBot(root);i=interaction();await open_test(bot,i);demo=bot.test_sessions[100]
@@ -218,7 +218,7 @@ def test_automatic_wuphf_rehearsal_runs_both_stages_without_external_delivery(ro
         sms=demo.store.rows("SELECT * FROM audit WHERE action='test_nudge'")
         assert len(sms)==4
         await advance.callback(interaction())
-        assert len(demo.store.rows("SELECT * FROM audit WHERE action='test_nudge'"))==8
+        assert len(demo.store.rows("SELECT * FROM audit WHERE action='test_nudge'"))==4
         assert all(j['state']=='done' for j in demo.store.rows('SELECT * FROM wuphf_jobs'))
         assert not root.rows('SELECT * FROM wuphf_jobs')
         await bot.close()

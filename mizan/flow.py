@@ -25,6 +25,7 @@ class Invitation(discord.ui.View):
 async def respond(bot,i,sid,uid,coming,revision):
     guard_context(bot,i)
     bot.check_guild(i)
+    bot.store.require_active(sid)
     penalty=bot.store.answer(sid,uid,coming,revision)
     await i.response.defer()
     await bot.update_card(sid)
@@ -43,6 +44,7 @@ async def suggest_menu(bot,i,sid,uid,revision):
     guard_context(bot,i)
     bot.check_guild(i)
     if uid!=i.user.id and not hasattr(bot,'demo_owner'): raise RuleError('Suggest a time for yourself.')
+    bot.store.require_active(sid)
     s=bot.store.session(sid)
     response=bot.store.one('SELECT response FROM rsvps WHERE session_id=? AND revision=? AND user_id=?',(sid,revision,uid))
     rescheduling=bot.store.one("SELECT 1 FROM polls WHERE session_id=? AND revision=? AND status IN ('open','no_agreement')",(sid,revision))
@@ -115,6 +117,7 @@ async def submit_suggestions(bot,i,sid,uid,revision,times):
     guard_context(bot,i)
     bot.check_guild(i)
     if uid!=i.user.id and not hasattr(bot,'demo_owner'): raise RuleError('Suggest times for yourself.')
+    bot.store.require_active(sid)
     times=list(dict.fromkeys(times))
     pid=bot.store.suggest_many(sid,uid,times,revision)
     await i.response.defer()

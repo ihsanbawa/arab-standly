@@ -71,6 +71,7 @@ def danger(store,month=None):
     sessions=store.rows("SELECT * FROM sessions WHERE status='scheduled' AND start_at>=? AND start_at<? ORDER BY confirmation_due",(a,b))
     confirmed=0; previous_end=None; actions=[]
     for s in sessions:
+        if not store.is_active(s['id']): continue
         if datetime.fromisoformat(s['start_at'])<=store.clock():
             actions.append(f"Confirm attendance and recap for class #{s['id']}")
             continue

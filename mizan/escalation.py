@@ -28,6 +28,8 @@ def replies_enabled():
 def still_needed(store,job):
     if job['source']!='auto':return True
     s=store.session(job['session_id'])
+    if not store.is_active(s['id']) or store.has_conflict(s):return False
+    if store.get('automation_paused',False):return False
     if s['status']!='scheduled' or s['revision']!=job['revision'] or store.clock()>=datetime.fromisoformat(s['start_at']):return False
     if not store.one('SELECT 1 FROM session_members WHERE session_id=? AND user_id=?',(s['id'],job['user_id'])):return False
     # Any real RSVP (including can't attend) ends the unanswered-RSVP escalation.
@@ -140,7 +142,12 @@ async def _process(bot):
         if not bot.wuphf.preferences(uid).get('sms'):
             with s.db:s.db.execute("UPDATE wuphf_jobs SET state='stopped' WHERE id=?",(job['id'],))
             continue
+        if job['source']=='auto' and s.clock()<s.reminder_due(s.session(job['session_id'])):
+            continue  # Legacy queued jobs also receive the minimum response window.
         followup=job['state']=='waiting_call'
+        if followup and job['source']=='auto' and not s.get('auto_sms_followup',False):
+            with s.db:s.db.execute("UPDATE wuphf_jobs SET state='done',reason='One automatic text per invitation' WHERE id=?",(job['id'],))
+            continue
         due=job['call_due'] if followup else job['sms_due']
         if not due or s.clock()<datetime.fromisoformat(due):continue
         try:bot.wuphf.check(uid,'sms')
@@ -161,7 +168,9 @@ async def _process(bot):
             if not still_needed(s,job):
                 s.db.execute("UPDATE wuphf_jobs SET state='answered' WHERE id=? AND state=?",(job['id'],sending))
                 continue
-            if followup:s.db.execute("UPDATE wuphf_jobs SET state='done',call_sent=? WHERE id=? AND state=?",(sent,job['id'],sending))
+            if job['source']=='auto' and not s.get('auto_sms_followup',False):
+                s.db.execute("UPDATE wuphf_jobs SET state='done',sms_sent=? WHERE id=? AND state=?",(sent,job['id'],sending))
+            elif followup:s.db.execute("UPDATE wuphf_jobs SET state='done',call_sent=? WHERE id=? AND state=?",(sent,job['id'],sending))
             else:s.db.execute("UPDATE wuphf_jobs SET state='waiting_call',sms_sent=?,call_due=? WHERE id=? AND state=?",(sent,stamp(s.clock()+timedelta(minutes=job['call_delay'])),job['id'],sending))
-        # The manual card already named them in public; every other text gets its own post.
-        if followup or job['source']=='auto':await announce(bot,public_text(bot,job,followup))
+        # Automatic reminders stay private; manual WUPHF retains its requested public follow-up.
+        if followup and job['source']=='manual':await announce(bot,public_text(bot,job,followup))

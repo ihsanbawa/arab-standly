@@ -5,12 +5,12 @@ A Discord bot for a four-person **in-person** Arabic class. Coordinates Friday c
 ## Included
 
 - A persistent button panel: schedule, RSVP, class controls, scores, links, roster, WUPHF for any server member and TA settings. Five essential slash commands; structured menus guide any remaining choices.
-- Automatic Wednesday 6 PM (Dallas time) RSVP invitations for Friday, once the four-person roster is registered.
+- One active class at a time. Wednesday 6 PM (Dallas time) invitations wait while an existing class needs RSVPs, a replacement, attendance or recap. A manual future date takes priority over an older automatic invitation.
 - Exactly two RSVP buttons: **I can come / I can’t**. Declines require a replacement suggestion, automatically open or extend a group availability poll, and apply one Al-Mizan deduction.
 - After-class TA recap prompt; completed lesson, next lesson and preparation carry into the following invitation.
 - Class announcement cards with physical location, topic, preparation, RSVP deadline, and Quizlet links.
 - Persistent RSVP and shared availability controls; they work after restarts.
-- RSVP nudges, conflict notifications, day-before and one-hour reminders.
+- One private RSVP nudge, one optional automatic text, and a one-hour reminder only after all four agree. Repeated daily recap/suggestion posts and public automatic-text roasts are removed.
 - Unanimous rescheduling: the earliest time explicitly approved by all four locks automatically. Votes for that time become new RSVPs; other old responses never carry over.
 - Trust-based attendance: no routine roll call if everyone accepted. TA confirms class actually happened after its scheduled end; accepted participants count as present unless exceptions were recorded.
 - Disruption reports from participants. Reporter is never automatically blamed or deducted.
@@ -22,7 +22,7 @@ A Discord bot for a four-person **in-person** Arabic class. Coordinates Friday c
 - Shared minimum of two classes per calendar month, at-risk alerts, unresolved-makeup reminders.
 - Private record export, restricted TA commands, audit trail, persistent SQLite storage.
 - Beeminder **group** monthly-compliance adapter, disabled until configured. See [BEEMINDER.md](BEEMINDER.md).
-- Automatic Discord → text → ruder text RSVP escalation, each text announced with a roast in the class channel; RSVP by replying YES/NO to the text; roster-only `/wuphf @person`; group-authorised defaults, personal stop/resume, quiet hours, cooldown and daily limits.
+- Automatic Discord → one private text RSVP reminder; RSVP by replying YES/NO to the text; roster-only, explicitly requested `/wuphf @person` retains its two-text sequence. Personal stop/resume, quiet hours, cooldown and daily limits remain.
 
 The book-based learning assistant, automated grading, and Quizlet completion tracking are **not included** in this first version. The two supplied Quizlet links are included as resources.
 
@@ -51,7 +51,7 @@ cp .env.example .env
 ## Everyday flow
 
 1. Use the permanent **Shaykh Standly** panel or `/standly`. Invite the four people, then select them with **More → Class roster**.
-2. Every **Wednesday at 6 PM America/Chicago**, the bot announces Friday’s class at IACC at 4 PM Dallas time. If setup happens later in the week it catches up. The default is 4 PM, adjustable to 3 or 5 PM in TA settings, for a 60-minute class.
+2. Every **Wednesday at 6 PM America/Chicago**, the bot announces Friday’s class at IACC at 4 PM Dallas time. If setup happens later in the week it catches up, provided there is no active class to finish first. The default is 4 PM, adjustable to 3 or 5 PM in TA settings, for a 60-minute class.
 3. The class card has exactly **I can come / I can’t**. No separate late/change/report controls on that invitation. TA actions remain on the main panel and post-class prompt.
 4. **I can’t** records −1 (−2 within 24 hours), immediately opens a replacement-time picker, and posts a curated Arabic roast. Select all workable suggested dates and tap **Suggest selected times**, or enter up to three custom Dallas date/times. The selected batch is saved atomically and posted as one shared poll. The bot automatically posts an availability poll and marks the proposer available. Subsequent suggestions extend the same open poll without erasing existing votes, up to three alternatives. Closing the picker leaves a visible pending suggestion; the bot nudges them after 12 hours. No one can propose on behalf of another member outside Test mode.
 5. One shared rescheduling card shows up to three proposed times, each with all four names and ✅ available / ❌ unavailable / ⏳ unanswered. **Update my availability** opens a private multi-select menu: select every workable time and **Save availability**, or choose **None work for me**. Saving records all displayed options atomically. Nothing changes while selecting. New suggestions preserve prior answers and add an unanswered option; a ballot opened before a new suggestion must be reopened before saving. The proposer is automatically available for their suggestion. As soon as all four approve a time, it locks automatically and becomes the class's four RSVPs. If several qualify together, the earliest wins. No TA approval or override exists. Once everyone answers every option without agreement, or the deadline expires, a fresh suggestion round opens. None-work answers immediately offer another time and leave a pending reminder if abandoned. Replacement votes incur no additional deduction. Only the strongest original disruption deduction counts per person/class.
@@ -96,6 +96,14 @@ New classes default to **Friday at 4 PM, 60 minutes at IACC Plano**, in `America
 
 Picker and typed entries update a private draft. Add or deselect up to three options, review them, then **Suggest selected times** to publish. **Clear draft** starts again; **Back to suggestions** preserves the draft. The same date/time picker is available when scheduling a new class. The old verified prayer snapshot remains available for historical lookup; weekly invitations no longer depend on it or expire at year end. Scores and financial credit are never inferred from creating an invitation.
 
+### Keep one clear plan
+
+**More → Class controls / attendance → select a class → Make this the active plan** chooses the only class that can send automated reminders or accept member availability updates. Other open records remain visible for TA review, with “Not current · reminders paused” on their cards. Monthly future capacity counts only the active plan; historical attendance/points stay intact. A manual new invitation becomes the active plan after confirmation. **Schedule / make-up class** first points to the current plan rather than silently proposing another invitation.
+
+**Skip class · no make-up** stops its polls, replacement requests and automatic texts without creating a new penalty or deleting existing score history. The weekly scheduler won't recreate that skipped week. **Class didn’t happen** still means a replacement is owed and therefore keeps the pipeline occupied. After a real class, finish attendance and recap before the next invitation can be generated.
+
+**More → TA settings → Pause automatic invites & reminders** stops automatic scheduling/reminders; manual WUPHF requests remain explicit separate actions. Resume from the same button. **Pause weekly invites** only pauses new invitations. Ordinary chat messages (including “no class this week”) are not interpreted as commands: use the skip/pause controls. SMS replies to a reminder for a different class or revision are rejected rather than silently applied to a new plan.
+
 ### Commands and controls
 
 The public slash picker contains only **/standly**, **/wuphf**, **/stopnudges**, **/resumenudges**, and the TA-only **/testmode** (which runs in #shaykh-debug).
@@ -110,17 +118,19 @@ Set `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, and `TWILIO_PHONE_NUMBER` private
 
 Phone nudges use the group’s agreed permission by default for privately configured recipients. No **My nudges** menu or opt-in step is required. `/stopnudges` stops all phone nudges to the requesting member and cancels pending jobs. `/resumenudges` resumes future jobs, retaining 9 PM–8 AM Dallas quiet hours. Existing explicit stop preferences are respected.
 
-**Automatic unanswered RSVP escalation:** once the RSVP deadline is reached, send the normal Discord DM/fallback mention. Queue a text two hours after that nudge, then one ruder follow-up text two hours after the actual first text, only if no RSVP has been recorded. Every text that goes out is also announced in the class channel with a roast, so ignoring it is public. There are no phone calls. Any RSVP—including unavailable—stops escalation. A changed revision, cancellation, removed participant, hiatus, or class starting also stops it. Each class/revision/person gets one automatic sequence.
+**Automatic unanswered RSVP reminders:** only the active plan sends reminders. Everyone gets at least 24 hours after invitation/revision before an overdue nudge, even for legacy invitations with a one-minute deadline. A private Discord DM is attempted once; blocked DMs produce one combined public request rather than four posts. A text is queued two hours later for unanswered RSVPs, subject to quiet hours/caps, and is sent at most once per class/revision/person by default. Automatic texts produce no public roast posts. Any RSVP stops that person's texts; a decline stops original-time RSVP texts for everyone while the group finds a new time. Switching active plans, skipping, pausing automation, a changed revision, removed participant, hiatus, or class starting stops pending jobs. Old queued follow-ups are retired without another send. The internal `auto_sms_followup` compatibility setting can explicitly enable a second automatic text, but is off by default and is not enabled by deployment.
+
+**Less public noise:** there is no day-before start announcement. The one-hour reminder requires all four to be marked coming. Recap and replacement-suggestion prompts occur at most once per active class/revision, rather than daily; conflict state is shown on the card instead of a duplicate conflict post.
 
 **Member-triggered WUPHF:** any active roster member (or the bot owner) can use `/wuphf @person` or **WUPHF someone**; no TA role or scheduled class is needed. Other server members are refused. The target must have a privately configured number. Post one public mention with an **I’m here** button, queue a text immediately, then one ruder text (also announced in the channel) an hour after the first unless acknowledged. Only the recipient can acknowledge the job, with the button or by replying HERE to the text. One active sequence per recipient; manual jobs expire after 24 hours.
 
 All phone sends share a one-hour recipient cooldown, three-attempt local daily limit and quiet hours. Queues wait for permissible hours/capacity. Jobs and timestamps survive deployment. A provider timeout/error is terminal and surfaces for review; a restart during a provider request does not retry or advance to the follow-up text. There is no repeat loop.
 
-**Test mode:** Streaks & danger tests → advanced tools → **Test automatic WUPHF** rehearses Discord, text, follow-up text and cancellation with a fake clock and mocked phone provider. No real number is contacted.
+**Test mode:** Streaks & danger tests → advanced tools → **Test automatic WUPHF** rehearses Discord, one automatic text, no second automatic text, and cancellation with a fake clock and mocked phone provider. No real number is contacted.
 
 **RSVP by text (for members whose Discord buttons do not appear):** give the Railway service a public domain, set `TWILIO_WEBHOOK_URL` to `https://<that-domain>/twilio/sms`, and enter the same URL in the Twilio console under the phone number’s **Messaging → A message comes in** webhook (HTTP POST). Members can then reply to any text from the bot:
 
-- **YES** / **NO** — RSVP for their next scheduled class. NO applies the normal Al-Mizan deduction and public roast; a replacement time is still suggested in Discord.
+- **YES** / **NO** — RSVP for their active scheduled class. NO applies the normal Al-Mizan deduction and public roast; a replacement time is still suggested in Discord.
 - **HERE** — acknowledge a pending WUPHF.
 - **STOP** / **START** — same as `/stopnudges` and `/resumenudges`.
 
