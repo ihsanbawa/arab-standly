@@ -9,6 +9,7 @@ def save_ballot(store,pid,uid,options,selected):
     """A saved ballot answers exactly the options the person actually saw."""
     with store.transaction():
         p=store.poll(pid)
+        store.require_active(p['session_id'])
         if p['options']!=options:
             raise RuleError('A new time was added while you were choosing. Reopen Update my availability to include it.')
         choices=set(selected)
@@ -38,6 +39,7 @@ async def open_ballot(bot,interaction,pid,uid):
     if uid!=interaction.user.id and not hasattr(bot,'demo_owner'):
         raise RuleError('You can only answer for yourself.')
     p=bot.store.poll(pid)
+    bot.store.require_active(p['session_id'])
     bot.store.ensure_participant(p['session_id'],uid)
     if p['status']!='open' or bot.store.clock()>=datetime.fromisoformat(p['deadline']):
         raise RuleError('This round is closed. Open the current class card.')

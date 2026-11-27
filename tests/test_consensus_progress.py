@@ -143,16 +143,16 @@ def test_streaks_cross_months_and_correct_after_absence_or_excuse(world):
     assert progress.group_streak(s)['current']==0
 
 
-def test_danger_uses_all_four_rsvps_and_escalates_final_week(world):
+def test_danger_counts_only_active_plan_and_escalates_final_week(world):
     s,c=world
     first=session(s,c);second=session(s,c,'2026-10-10 07:00')
     assert progress.danger(s)['level']==2
     for sid in [first,second]:
         for uid in range(1,5):s.answer(sid,uid,True,0)
-    assert progress.danger(s)['confirmed']==2
-    assert progress.danger(s)['level']==1
-    s.answer(second,4,False,0)
     assert progress.danger(s)['confirmed']==1
+    assert progress.danger(s)['level']==2
+    s.answer(second,4,False,0)
+    assert progress.danger(s)['confirmed']==0
     assert progress.danger(s)['level']==2
     c[0]=parse_local('2026-10-30 12:00',s.tz)
     assert progress.danger(s)['level']==3
@@ -190,7 +190,7 @@ def test_danger_refreshes_cards_without_separate_alert_messages(world):
         reports=[x.args[0] for x in bot.notify.call_args_list if 'completed**' in x.args[0]]
         assert not reports
         assert bot.update_card.await_count==2
-        assert any('On track' in f.value for f in bot.card(ids[0]).fields)
+        assert any('1 future class(es)' in f.value for f in bot.card(ids[0]).fields)
         bot.update_card.reset_mock()
         s.answer(ids[-1],4,False,0)
         await bot.tick();await bot.tick()

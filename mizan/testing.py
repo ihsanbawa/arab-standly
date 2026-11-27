@@ -354,9 +354,14 @@ async def rehearse_wuphf(demo,i):
         session=demo.store.one("SELECT * FROM sessions WHERE status='scheduled' ORDER BY start_at LIMIT 1")
         if not session:raise RuleError('Run the midweek RSVP first.')
         sid=session['id'];uid=2
-        # Use daytime hours so both phone stages can run outside quiet hours.
+        # Rehearse after the response window, with room for one daytime text.
         from zoneinfo import ZoneInfo
-        demo.test_clock=(datetime.fromisoformat(session['start_at']).astimezone(ZoneInfo(demo.store.tz))-timedelta(days=1)).replace(hour=10,minute=0)
+        target=demo.store.reminder_due(session).astimezone(ZoneInfo(demo.store.tz))
+        if target.hour>=19: target=(target+timedelta(days=1)).replace(hour=8,minute=0)
+        elif target.hour<8: target=target.replace(hour=8,minute=0)
+        if target+timedelta(hours=2)>=datetime.fromisoformat(session['start_at']):
+            raise RuleError('This test class is too soon for automatic texts. Schedule a later test class first.')
+        demo.test_clock=target
         with demo.store.db:
             demo.store.db.execute('DELETE FROM rsvps WHERE session_id=? AND revision=? AND user_id=?',(sid,session['revision'],uid))
             demo.store.db.execute("DELETE FROM wuphf_jobs WHERE source='auto' AND session_id=? AND user_id=?",(sid,uid))
@@ -380,4 +385,4 @@ async def rehearse_wuphf(demo,i):
     view.button('Advance 2 hours',advance)
     view.button('RSVP as member 2',answer)
     view.button('Test home',home)
-    await send(i,'🧪 **Automatic WUPHF rehearsal**\nStart with a missing RSVP, then advance twice: simulated text, simulated follow-up text. Or RSVP between the two to cancel the follow-up. All phone requests stay mocked.',view)
+    await send(i,'🧪 **Automatic WUPHF rehearsal**\nStart with a missing RSVP, then advance twice: one simulated text, then no additional automatic text. RSVP before the first text to cancel it. All phone requests stay mocked.',view)

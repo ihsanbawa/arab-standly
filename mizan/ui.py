@@ -146,9 +146,18 @@ class Form(discord.ui.Modal):
 async def schedule_preview(bot, interaction, spec=None):
     bot.require_ta(interaction)
     if spec is None:
+        active=bot.store.active_class()
+        if active:
+            view=Menu(bot)
+            async def manage(i): await class_action(bot,i,'manage',active['id'])
+            async def new_plan(i): await schedule_preview(bot,i,defaults(bot.store))
+            view.button('Manage current class',manage,style=discord.ButtonStyle.primary)
+            view.button('Plan a different class',new_plan)
+            await send(interaction,f"**Already working on class #{active['id']} · {label(active['start_at'])}.**\nThe weekly job will wait. Use its controls to reschedule or skip it. Announcing a different class makes that the only active plan and pauses this one.",view)
+            return
         spec = defaults(bot.store)
     start = spec['start']
-    text = (f"**Announce this class?**\n📅 {label(start)} · {spec['duration']} minutes\n"
+    text = (f"**Announce this as the only active class?**\n📅 {label(start)} · {spec['duration']} minutes\n"
             f"📍 {safe(spec['location'])}\n📖 {safe(spec['topic'])}\n{safe(spec['prep'])}\n")
     text += f"\nRoster: **{len(bot.store.roster())}/4**. Invite everyone and use Class roster before announcing."
     view = Menu(bot)
@@ -194,6 +203,11 @@ async def schedule_preview(bot, interaction, spec=None):
 async def choose_class(bot, interaction, action, sid=None):
     if action not in {'rsvp','report','nextclass'}:
         bot.require_ta(interaction)
+    if sid is None and action in {'rsvp','nextclass'}:
+        current=bot.store.active_class()
+        if not current:
+            return await send(interaction,'No active class. The TA can schedule the next class from More.')
+        sid=current['id']
     if sid is not None:
         return await class_action(bot,interaction,action,sid)
     if action in {'rsvp','report','nextclass','poll','cancel'}:
@@ -256,7 +270,7 @@ async def class_action(bot, interaction, action, sid):
     s=bot.store.session(sid)
     if action in {'rsvp','nextclass'}:
         from .bot import ClassView
-        await interaction.response.send_message(embed=bot.card(sid),view=ClassView(bot,sid,s['revision']) if s['status']=='scheduled' else None,ephemeral=True)
+        await interaction.response.send_message(embed=bot.card(sid),view=ClassView(bot,sid,s['revision']) if s['status']=='scheduled' and bot.store.is_active(sid) else None,ephemeral=True)
         return
     if action=='report':
         from .bot import ReportModal
@@ -269,12 +283,24 @@ async def class_action(bot, interaction, action, sid):
         view=Menu(bot)
         for name,a in [('Reschedule / poll','poll'),('Attendance exception','attendance'),
                        ('Class happened · add recap','recap'),("Class didn't happen",'cancel'),
-                       ('Reopen confirmation','reopen'),('Waive penalty','waive'),('View replacement votes','confirm_slot')]:
+                       ('Reopen confirmation','reopen'),('Waive penalty','waive'),('View replacement votes','confirm_slot'),('Skip class · no make-up','skip'),('Make this the active plan','activate')]:
             async def clicked(i,action=a):
                 guarded(bot,sid,rev)
                 await class_action(bot,i,action,sid)
             view.button(name,clicked)
         await send(interaction,f"**Class controls · {label(s['start_at'])}**\n{safe(s['topic'])} · {s['status'].replace('_',' ')}",view)
+    elif action in {'skip','activate'}:
+        async def apply(i):
+            bot.require_ta(i)
+            previous=bot.store.active_class()
+            if action=='skip': bot.store.skip_class(sid,i.user.id)
+            else: bot.store.activate_class(sid,i.user.id)
+            await i.response.defer(ephemeral=True)
+            await bot.update_card(sid)
+            if previous and previous['id']!=sid: await bot.update_card(previous['id'])
+            await send(i,'Class skipped. Its reminders and replacement requests are stopped; no new penalty was added.' if action=='skip' else 'This is now the only active plan. Other class reminders are stopped.')
+        await confirm(bot,interaction,
+            f"Skip **class #{sid} · {label(s['start_at'])}** without a make-up? This stops its reminders and automatic invitations for this week. Existing score entries stay available for TA review." if action=='skip' else f"Use **class #{sid} · {label(s['start_at'])}** as the only active plan? Other classes will stop sending reminders, and the weekly job will wait for this one.",apply,sid)
     elif action=='recap':
         from .flow import Recap
         await send(interaction, 'What did we cover, and what is next?', Recap(bot,sid,rev))
@@ -392,6 +418,11 @@ async def wuphf_menu(bot,interaction):
 async def settings_menu(bot,interaction):
     bot.require_ta(interaction)
     view=Menu(bot)
+    async def pause(i):
+        bot.require_ta(i)
+        bot.store.set('automation_paused',not bot.store.get('automation_paused',False))
+        await settings_menu(bot,i)
+    view.button('Resume automatic invites & reminders' if bot.store.get('automation_paused',False) else 'Pause automatic invites & reminders',pause)
     async def weekly(i):
         bot.require_ta(i)
         bot.store.set('weekly_invites',not bot.store.get('weekly_invites',True))
@@ -416,7 +447,7 @@ async def settings_menu(bot,interaction):
             ('Current lesson',bot.store.get('class_topic','Arabic class · continue our current lesson'),True,''),
             ('Preparation',bot.store.get('class_prep','Bring all three books.'),False,'')],submitted))
     view.button('Default lesson / prep',lesson)
-    await send(interaction,f"**Class settings**\nWednesday 6 PM invitations: {'ON (waiting for four roster members)' if bot.store.get('weekly_invites',True) and len(bot.store.roster())!=4 else 'ON' if bot.store.get('weekly_invites',True) else 'paused'}.\nFriday · {bot.store.get('class_hour',16)-12} PM Dallas time · IACC · 60 minutes.\nExisting invitations keep their announced times; use replacement suggestions to move them with everyone’s agreement.",view)
+    await send(interaction,f"**Class settings**\nAutomatic invites & reminders: {"paused" if bot.store.get("automation_paused",False) else "on · one active class"}.\nWednesday 6 PM invitations: {'ON (waiting for four roster members)' if bot.store.get('weekly_invites',True) and len(bot.store.roster())!=4 else 'ON' if bot.store.get('weekly_invites',True) else 'paused'}.\nFriday · {bot.store.get('class_hour',16)-12} PM Dallas time · IACC · 60 minutes.\nExisting invitations keep their announced times; use replacement suggestions to move them with everyone’s agreement.",view)
 
 
 

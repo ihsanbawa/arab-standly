@@ -37,6 +37,8 @@ def world(tmp_path, monkeypatch):
     for u in range(1, 5):
         s.member(u, f"Member {u}")
     sid = s.create_class(c[0] + timedelta(days=2), 60, "IACC", "Arabic", 1)
+    s.set("auto_sms_followup",True)
+    c[0]+=timedelta(days=1)
     yield s, c, sid
     s.close()
 

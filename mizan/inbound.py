@@ -40,11 +40,10 @@ def keyword(body):
 
 
 def open_class(store, uid):
-    return store.one(
-        "SELECT s.* FROM sessions s JOIN session_members m ON m.session_id=s.id "
-        "WHERE s.status='scheduled' AND m.user_id=? AND s.start_at>? ORDER BY s.start_at LIMIT 1",
-        (uid, stamp(store.clock())),
-    )
+    session=store.active_class()
+    if not session or session['status']!='scheduled' or session['start_at']<=stamp(store.clock()): return None
+    return session if store.one('SELECT 1 FROM session_members WHERE session_id=? AND user_id=?',(session['id'],uid)) else None
+
 
 
 async def check_in(bot, uid):
@@ -75,6 +74,9 @@ async def rsvp(bot, uid, coming):
     if not session:
         return "There is no open class to RSVP for right now."
     sid, revision = session["id"], session["revision"]
+    last=bot.store.one("SELECT session_id,revision FROM wuphf_jobs WHERE source='auto' AND user_id=? AND (sms_sent IS NOT NULL OR call_sent IS NOT NULL) ORDER BY COALESCE(call_sent,sms_sent) DESC,id DESC LIMIT 1",(uid,))
+    if last and (last['session_id']!=sid or last['revision']!=revision):
+        return f"Your last text reminder was for an older plan. The current class is #{sid}. Open Next class in Discord to confirm its date before responding; no RSVP was changed."
     penalty = bot.store.answer(sid, uid, coming, revision)
     await bot.update_card(sid)
     if coming:

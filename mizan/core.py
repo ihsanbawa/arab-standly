@@ -209,6 +209,64 @@ class Store:
             raise RuleError("Class not found.")
         return r
 
+    def active_class(self):
+        """One plan owns automation. Older installations prefer the latest human plan."""
+        setting=self.one("SELECT value FROM settings WHERE key='active_class_id'")
+        if setting:
+            sid=json.loads(setting['value'])
+            row=self.one('SELECT * FROM sessions WHERE id=?',(sid,)) if sid else None
+            if row and (row['status'] in {'scheduled','needs_replacement'} or row['status']=='held' and not self.one('SELECT 1 FROM lesson_notes WHERE session_id=? AND revision=?',(row['id'],row['revision']))): return row
+            return None
+        return self.one("SELECT * FROM sessions WHERE status IN ('scheduled','needs_replacement') "
+                        "ORDER BY (status='scheduled') DESC,(created_by!=0) DESC,id DESC LIMIT 1")
+
+    def is_active(self, sid):
+        active=self.active_class()
+        return bool(active and active['id']==sid)
+
+    def require_active(self, sid):
+        if not self.is_active(sid):
+            raise RuleError('This is not the current class. Open Next class; a TA can select the active plan in Class controls.')
+
+    def activate_class(self, sid, actor):
+        row=self.session(sid)
+        if row['status'] not in {'scheduled','needs_replacement'}:
+            raise RuleError('Only an open class can be the active plan.')
+        with self.transaction():
+            self.db.execute("INSERT INTO settings VALUES('active_class_id',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(json.dumps(sid),))
+            self.db.execute("UPDATE wuphf_jobs SET state='stopped',reason='Another class is active' WHERE source='auto' AND session_id!=? AND state IN ('waiting_sms','waiting_call')",(sid,))
+            self.log(actor,'active_class_selected',{'session':sid})
+
+    def skip_class(self, sid, actor):
+        row=self.session(sid)
+        if row['status'] not in {'scheduled','needs_replacement'}:
+            raise RuleError('Only an open class can be skipped.')
+        self.ensure_unsealed(row)
+        was_active=self.is_active(sid)
+        day=datetime.fromisoformat(row['start_at']).astimezone(ZoneInfo(self.tz)).date()
+        friday=day+timedelta(days=4-day.weekday())
+        with self.transaction():
+            self.db.execute("UPDATE sessions SET status='skipped',updated_at=? WHERE id=?",(stamp(self.clock()),sid))
+            self.db.execute("UPDATE polls SET status='superseded' WHERE session_id=? AND status IN ('open','no_agreement')",(sid,))
+            self.db.execute("UPDATE replacement_requests SET state='resolved' WHERE session_id=?",(sid,))
+            self.db.execute("UPDATE wuphf_jobs SET state='stopped',reason='Class skipped' WHERE source='auto' AND session_id=? AND state IN ('waiting_sms','waiting_call')",(sid,))
+            today=self.clock().astimezone(ZoneInfo(self.tz)).date()
+            this_friday=today+timedelta(days=(4-today.weekday())%7)
+            for skipped_day in {friday,this_friday}:
+                self.db.execute("INSERT INTO settings VALUES(?, 'true') ON CONFLICT(key) DO UPDATE SET value=excluded.value",(f'weekly_skip:{skipped_day.isoformat()}',))
+            # Null is intentional: do not resurrect an older abandoned plan.
+            if was_active:
+                self.db.execute("INSERT INTO settings VALUES('active_class_id','null') ON CONFLICT(key) DO UPDATE SET value='null'")
+            self.log(actor,'class_skipped',{'session':sid})
+
+    def has_conflict(self, session):
+        return session['status']=='needs_replacement' or any(r['response'] in {'unavailable','change'} for r in self.responses(session['id']))
+
+    def reminder_due(self, session):
+        # Honor explicit deadlines while giving late/catch-up invites at least a day.
+        return max(datetime.fromisoformat(session['rsvp_due']),
+                   datetime.fromisoformat(session['updated_at'])+timedelta(hours=24))
+
     def participants(self, sid):
         return self.rows(
             "SELECT sm.user_id,COALESCE(m.name,'Member') name FROM session_members sm LEFT JOIN members m USING(user_id) WHERE session_id=?",
@@ -239,7 +297,11 @@ class Store:
             raise RuleError("Duration must be 10–240 minutes.")
         if not location.strip() or not topic.strip():
             raise RuleError("Location and topic are required.")
-        due = due or max(self.clock() + timedelta(minutes=1), start - timedelta(hours=48))
+        if due is None:
+            due=max(self.clock()+timedelta(hours=24),start-timedelta(hours=48))
+            if due>=start:
+                # A short-notice class can collect RSVPs, but never gets overdue texts within 24h.
+                due=self.clock()+(start-self.clock())/2
         if not self.clock() < due < start:
             raise RuleError("RSVP deadline must be in the future and before class.")
         # Reserve a small month-end audit window; otherwise an in-progress class could be charged as missed.
@@ -269,6 +331,7 @@ class Store:
                 "INSERT INTO session_members VALUES(?,?)", [(sid, m["user_id"]) for m in self.roster()]
             )
             self.log(actor, "class_created", {"session": sid})
+            self.db.execute("INSERT INTO settings VALUES('active_class_id',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(json.dumps(sid),))
             if weekly_key:
                 self.db.execute('INSERT INTO settings VALUES(?,?)', (weekly_key, json.dumps(sid)))
         return sid

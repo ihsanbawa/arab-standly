@@ -16,6 +16,8 @@ def world(tmp_path,monkeypatch):
     s=Store(tmp_path/'db',clock=lambda:c[0]);s.set('guild_id',123);s.set('channel_id',456)
     for u in range(1,5):s.member(u,f'Member {u}')
     sid=s.create_class(c[0]+timedelta(days=2),60,'IACC','Arabic',1)
+    s.set('auto_sms_followup',True)
+    c[0]+=timedelta(days=1)  # The 24-hour response window has elapsed.
     yield s,c,sid
     s.close()
 
@@ -27,7 +29,7 @@ def bot_for(s):
     return bot
 
 
-def test_auto_text_two_hours_then_ruder_text_two_hours_after_actual_text(world):
+def test_opt_in_auto_followup_two_hours_after_actual_text(world):
     s,c,sid=world
     async def run():
         bot=bot_for(s);session=s.session(sid)
@@ -48,10 +50,9 @@ def test_auto_text_two_hours_then_ruder_text_two_hours_after_actual_text(world):
             assert sms_fits(SMS_PREFIX+text+SMS_STOP)
         assert first[3].split('\n')[1]!=second[3].split('\n')[1]
         assert s.one('SELECT state FROM wuphf_jobs WHERE id=?',(jid,))['state']=='done'
-        # Each text is also announced, with a roast, in the class channel.
-        posts=[x.args[0] for x in bot.notify.call_args_list]
-        assert len(posts)==2 and all('<@1>' in x and '||' in x for x in posts)
-        assert 'texted them' in posts[0] and 'Second text sent' in posts[1]
+        # Both SMS stages share one group post; another public roast waits a full day.
+        assert bot.notify.await_count==1
+        assert 'RSVP department' in bot.notify.call_args.args[0]
         await bot.close()
     asyncio.run(run())
 

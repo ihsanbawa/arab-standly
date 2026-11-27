@@ -17,7 +17,7 @@ from discord.ext import tasks
 from dotenv import load_dotenv
 
 from .beeminder import Beeminder
-from .content import NUDGE, RESOURCES, roast
+from .content import RESOURCES, roast
 from .core import RuleError, Store, month_of, parse_local, stamp
 from .wuphf import Wuphf
 from . import ui, consensus, progress
@@ -180,6 +180,9 @@ class MizanBot(discord.Client):
         month = month_of(datetime.fromisoformat(s["start_at"]), self.store.tz)
         confirmed=progress.locked(self.store,sid)
         state="Confirmed ✅" if confirmed else s['status'].replace('_', ' ').title()
+        if s['status'] in {'scheduled','needs_replacement'}:
+            if not self.store.is_active(sid): state='Not current · reminders paused'
+            elif self.store.has_conflict(s): state='Needs a new time'
         embed = discord.Embed(
             title=f"📚 Shaykh Standly · Class #{sid} · {state}",
             description=f"{when(s['start_at'])}\n📍 {safe(s['location'])}\n**{safe(s['topic'])}**",
@@ -206,7 +209,7 @@ class MizanBot(discord.Client):
         pending=self.store.rows("SELECT user_id FROM replacement_requests WHERE session_id=? AND revision=? AND state='pending'",(sid,s['revision']))
         if pending:
             embed.add_field(name='Replacement times needed',value=', '.join(f"<@{r['user_id']}>" for r in pending),inline=False)
-        embed.add_field(name="RSVP deadline", value=when(s["rsvp_due"]))
+        embed.add_field(name="RSVP deadline", value=when(stamp(min(self.store.reminder_due(s),datetime.fromisoformat(s["start_at"])))))
         embed.add_field(
             name=f"Group commitment · {month}",
             value=f"**{self.store.monthly_count(month)}/2** classes held\nBeeminder: {'configured; month-end audit' if self.bee.configured() else 'not activated'}",
@@ -227,6 +230,8 @@ class MizanBot(discord.Client):
         return embed
 
     def card_message(self,sid):
+        if not self.store.is_active(sid) and self.store.session(sid)['status'] in {'scheduled','needs_replacement'}:
+            return f'📚 Class #{sid} is not the current plan. Reminders are paused; use **Next class**.'
         people=' '.join(f"<@{m['user_id']}>" for m in self.store.participants(sid))
         if progress.locked(self.store,sid):
             return f'✅ {people} **Class confirmed — all four agreed.** If plans change, tap **I can’t** below.'
@@ -239,7 +244,7 @@ class MizanBot(discord.Client):
         channel = await self.channel()
         if not channel:
             raise RuleError("Open More → TA settings → Use this channel first.")
-        view = ClassView(self, sid, s["revision"]) if s["status"] == "scheduled" else None
+        view = ClassView(self, sid, s["revision"]) if s["status"] == "scheduled" and self.store.is_active(sid) else None
         if s["message_id"]:
             try:
                 message = await channel.fetch_message(s["message_id"])
@@ -418,6 +423,13 @@ class MizanBot(discord.Client):
     async def tick(self):
         if not self.store.get("channel_id"):
             return
+        if self.store.get("automation_paused",False):
+            from .escalation import process
+            await process(self)  # Explicitly requested manual WUPHFs can finish.
+            return
+        if not self.store.one("SELECT 1 FROM settings WHERE key='active_class_id'"):
+            current=self.store.active_class()
+            if current: self.store.activate_class(current['id'],0)
         await ui.ensure_panel(self)
         from .reports import public_board
         if not hasattr(self,"demo_owner") and self.is_ready():
@@ -437,44 +449,41 @@ class MizanBot(discord.Client):
         now = self.store.clock()
         local = now.astimezone(ZoneInfo(self.store.tz))
         month = month_of(now, self.store.tz)
-        for s in self.store.rows("SELECT * FROM sessions WHERE status='scheduled'"):
+        active=self.store.active_class()
+        for s in [active] if active and active["status"]=="scheduled" else []:
             sid, rev = s["id"], s["revision"]
             start = datetime.fromisoformat(s["start_at"])
-            end = datetime.fromisoformat(s["confirmation_due"])
             responses = {r["user_id"]: r["response"] for r in self.store.responses(sid)}
-            if datetime.fromisoformat(s["rsvp_due"]) <= now < start:
+            if self.store.reminder_due(s) <= now < start and not self.store.has_conflict(s):
+                blocked=[]
                 for p in self.store.participants(sid):
                     if p["user_id"] not in responses:
                         key = f"rsvp:{sid}:{rev}:{p['user_id']}"
                         if not self.store.notice_sent(key):
                             try:
                                 user = self.get_user(p["user_id"]) or await self.fetch_user(p["user_id"])
-                                await user.send(
-                                    f"Class #{sid}: {NUDGE}\n{when(s['start_at'])}\nUse the class announcement buttons in the server."
-                                )
+                                await user.send(f"Class #{sid}: please RSVP when you can.\n{when(s['start_at'])}\nUse the class announcement buttons in the server.")
                                 self.store.mark_notice(key)
                             except discord.HTTPException:
-                                await self.notify_once(key, f"<@{p['user_id']}> Class #{sid}: {NUDGE}")
-                        if self.store.notice_sent(key):
+                                blocked.append(p['user_id'])
+                        if self.store.notice_sent(key) or p['user_id'] in blocked:
                             from .escalation import enqueue_auto
                             enqueue_auto(self,s,p['user_id'])
-                conflicts = [uid for uid, r in responses.items() if r in {"unavailable", "change"}]
-                if conflicts:
-                    await self.notify_once(
-                        f"conflict:{sid}:{rev}",
-                        f"⚠️ Class #{sid} has {len(conflicts)} scheduling conflict(s). Everyone must agree on a replacement; suggest and vote in the rescheduling poll.",
-                    )
+                if blocked:
+                    await self.notify_once(f'rsvp-fallback:{sid}:{rev}',
+                        '📅 RSVP still needed for class #'+str(sid)+': '+', '.join(f'<@{uid}>' for uid in blocked)+'. Please use the class card; the time is not confirmed until everyone agrees.')
+                    if self.store.notice_sent(f'rsvp-fallback:{sid}:{rev}'):
+                        for uid in blocked: self.store.mark_notice(f'rsvp:{sid}:{rev}:{uid}')
             remaining = (start - now).total_seconds()
-            if 0 < remaining <= 86400:
-                label = "soon" if remaining <= 3600 else "day"
+            if 0 < remaining <= 3600 and progress.locked(self.store,sid):
                 await self.notify_once(
-                    f"reminder:{sid}:{rev}:{label}",
-                    f"📚 {'Class starts within an hour' if label == 'soon' else 'Class within 24 hours'}: #{sid}, {when(s['start_at'])}\n📍 {safe(s['location'])} · {safe(s['topic'])}\nPreparation: {safe(s['prep']) or 'Bring all three books.'}",
+                    f"reminder:{sid}:{rev}:soon",
+                    f"📚 Class starts within an hour: #{sid}, {when(s['start_at'])}\n📍 {safe(s['location'])} · {safe(s['topic'])}\nPreparation: {safe(s['prep']) or 'Bring all three books.'}",
                 )
         from .escalation import process
         await process(self)
         # Ask the TA after each class, including held classes still missing a recap.
-        for s in self.store.rows("SELECT * FROM sessions WHERE status IN ('scheduled','held')"):
+        for s in [active] if active and active["status"] in {"scheduled","held"} else []:
             if now < datetime.fromisoformat(s['confirmation_due']):
                 continue
             notes=self.store.one('SELECT 1 FROM lesson_notes WHERE session_id=? AND revision=?',(s['id'],s['revision']))
@@ -485,15 +494,17 @@ class MizanBot(discord.Client):
             ta=getattr(self,'demo_owner',None) or self.store.get('ta_user_id') or (guild.owner_id if guild else None)
             mention=f'<@{ta}> ' if ta else 'TA: '
             await self.notify_once(
-                f"recap:{s['id']}:{s['revision']}:{local.date()}",
+                f"recap:{s['id']}:{s['revision']}",
                 mention+f"did class #{s['id']} happen? **What did you cover, and what are we doing next?** Add a short recap below; it will carry into next week's announcement. Accepted RSVPs count as present; record exceptions first.",
                 view=Recap(self,s['id'],s['revision']))
-        for req in self.store.rows("SELECT r.* FROM replacement_requests r JOIN sessions s ON s.id=r.session_id AND s.revision=r.revision WHERE r.state='pending' AND s.status='scheduled'"):
-            if now < datetime.fromisoformat(req['updated_at'])+timedelta(hours=12): continue
-            await self.notify_once(f"suggestion:{req['session_id']}:{req['revision']}:{req['user_id']}:{local.date()}",
-                f"<@{req['user_id']}> you can't make class — please suggest a time you CAN attend.",
-                view=SuggestionReminder(self,req['session_id'],req['revision']))
+        if active:
+            pending=self.store.rows("SELECT * FROM replacement_requests WHERE session_id=? AND revision=? AND state='pending' AND updated_at<=?",(active['id'],active['revision'],stamp(now-timedelta(hours=12))))
+            if pending:
+                await self.notify_once(f"suggestions:{active['id']}:{active['revision']}",
+                    '📅 The current class needs a new time. Please suggest alternatives on its card: '+', '.join(f"<@{r['user_id']}>" for r in pending),
+                    view=SuggestionReminder(self,active['id'],active['revision']))
         for p in self.store.rows("SELECT * FROM polls WHERE status='open'"):
+            if not self.store.is_active(p['session_id']): continue
             pid = p["id"]
             if now >= datetime.fromisoformat(p["deadline"]):
                 await consensus.update(self,pid)
@@ -613,18 +624,21 @@ def register_commands(bot):
             return await ui.route(bot, interaction, 'schedule')
         dt = parse_local(start, store.tz)
         due = parse_local(rsvp_deadline, store.tz) if rsvp_deadline else None
+        previous=store.active_class()
         sid = store.create_class(dt, duration, location, topic, interaction.user.id, prep, due)
         await interaction.response.defer(ephemeral=True)
         await bot.update_card(sid, create=True)
+        if previous and previous['message_id']: await bot.update_card(previous['id'])
         await interaction.followup.send(
-            f"Class #{sid} announced. Default RSVP deadline is 48 hours before class, or soon if scheduled late.",
+            f"Class #{sid} is now the active plan. Other class reminders are paused. RSVP reminders allow at least 24 hours after a new invitation.",
             ephemeral=True,
         )
 
     @tree.command(description="Show the latest class card, current location, and responses")
     async def nextclass(interaction: discord.Interaction):
         bot.check_guild(interaction)
-        sessions = store.rows("SELECT * FROM sessions WHERE status='scheduled' ORDER BY start_at")
+        current=store.active_class()
+        sessions=[current] if current else []
         if not sessions:
             await interaction.response.send_message(
                 "No scheduled class. The TA can use More → Schedule / make-up class, or TA settings → Status for unresolved makeups.",
@@ -633,7 +647,7 @@ def register_commands(bot):
             return
         s = sessions[0]
         await interaction.response.send_message(
-            embed=bot.card(s["id"]), view=ClassView(bot, s["id"], s["revision"]), ephemeral=True
+            embed=bot.card(s["id"]), view=ClassView(bot, s["id"], s["revision"]) if s["status"]=="scheduled" else None, ephemeral=True
         )
 
     @tree.command(description="Respond to a class invitation")
